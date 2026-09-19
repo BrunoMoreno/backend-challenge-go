@@ -37,6 +37,13 @@ func pwInput(t *testing.T, provider, ext, player, walletID, key string, kind wag
 	}
 }
 
+func pwRefInput(t *testing.T, provider, ext, player, walletID, key string, kind wager.Kind, amount, ref string) processwager.Input {
+	t.Helper()
+	in := pwInput(t, provider, ext, player, walletID, key, kind, amount)
+	in.ReferenceExternalTransactionID = ref
+	return in
+}
+
 func walletBalance(t *testing.T, walletID string) (int64, int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -316,5 +323,180 @@ func TestProcessOutboxClaimable(t *testing.T) {
 	}
 	if ours != 2 {
 		t.Fatalf("eventos reclamáveis da transação = %d, want 2", ours)
+	}
+}
+
+func resolvedReference(t *testing.T, txID string) string {
+	t.Helper()
+	ctx := context.Background()
+	f := newTestUoW(t)
+	uow := beginOK(t, f)
+	var ref *string
+	if err := uow.Tx().QueryRow(ctx,
+		`SELECT resolved_reference_id FROM wager_transactions WHERE id = $1`, txID).
+		Scan(&ref); err != nil {
+		t.Fatalf("read resolved ref: %v", err)
+	}
+	_ = uow.Rollback(ctx)
+	if ref == nil {
+		return ""
+	}
+	return *ref
+}
+
+func TestProcessRefundResolvesBet(t *testing.T) {
+	ctx := context.Background()
+	f := newTestUoW(t)
+	seedWallet(t, f, "wal-ref", "player-ref", "100.00", 10000)
+	s := newProcessWagerService(t)
+
+	bet, err := s.Process(ctx, pwInput(t, "p-ref", "ext-bet", "player-ref", "wal-ref", "rfr-bet", wager.KindBet, "30.00"))
+	if err != nil {
+		t.Fatalf("bet: %v", err)
+	}
+
+	res, err := s.Process(ctx, pwRefInput(t, "p-ref", "ext-ref", "player-ref", "wal-ref", "rfr-ref", wager.KindRefund, "30.00", unique("ext-bet")))
+	if err != nil {
+		t.Fatalf("refund: %v", err)
+	}
+	if res.State != wager.StateProcessed || res.Balance == nil || res.Balance.String() != "100.00" {
+		t.Fatalf("refund = %+v, want PROCESSED 100.00", res)
+	}
+	if b, v := walletBalance(t, "wal-ref"); b != 10000 || v != 4 {
+		t.Fatalf("wallet = %d v%d, want 10000/4", b, v)
+	}
+	if ref := resolvedReference(t, res.TransactionID); ref != bet.TransactionID {
+		t.Fatalf("resolved_reference = %q, want %q", ref, bet.TransactionID)
+	}
+	if n := countLedgerForWallet(t, "wal-ref"); n != 3 { // open + bet + refund
+		t.Fatalf("ledger = %d, want 3", n)
+	}
+	if n := countEventsForTx(t, res.TransactionID); n != 2 {
+		t.Fatalf("eventos = %d, want 2", n)
+	}
+}
+
+func TestProcessRollbackDebitsWin(t *testing.T) {
+	ctx := context.Background()
+	f := newTestUoW(t)
+	seedWallet(t, f, "wal-rb", "player-rb", "100.00", 10000)
+	s := newProcessWagerService(t)
+
+	if _, err := s.Process(ctx, pwInput(t, "p-rb", "ext-bet", "player-rb", "wal-rb", "rbw-bet", wager.KindBet, "40.00")); err != nil {
+		t.Fatal(err)
+	}
+	win, err := s.Process(ctx, pwInput(t, "p-rb", "ext-win", "player-rb", "wal-rb", "rbw-win", wager.KindWin, "60.00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Process(ctx, pwRefInput(t, "p-rb", "ext-rb", "player-rb", "wal-rb", "rbw-rb", wager.KindRollback, "60.00", unique("ext-win")))
+	if err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if res.State != wager.StateProcessed || res.Balance == nil || res.Balance.String() != "60.00" {
+		t.Fatalf("rollback = %+v, want PROCESSED 60.00", res)
+	}
+	if b, v := walletBalance(t, "wal-rb"); b != 6000 || v != 5 {
+		t.Fatalf("wallet = %d v%d, want 6000/5", b, v)
+	}
+	if ref := resolvedReference(t, res.TransactionID); ref != win.TransactionID {
+		t.Fatalf("resolved_reference = %q, want %q", ref, win.TransactionID)
+	}
+	if n := countLedgerForWallet(t, "wal-rb"); n != 4 { // open + bet + win + rollback
+		t.Fatalf("ledger = %d, want 4", n)
+	}
+}
+
+func TestProcessReversalAlreadyReversedRejected(t *testing.T) {
+	ctx := context.Background()
+	f := newTestUoW(t)
+	seedWallet(t, f, "wal-dup", "player-dup", "100.00", 10000)
+	s := newProcessWagerService(t)
+
+	bet, err := s.Process(ctx, pwInput(t, "p-dup", "ext-bet", "player-dup", "wal-dup", "dup-bet", wager.KindBet, "30.00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Process(ctx, pwRefInput(t, "p-dup", "ext-ref1", "player-dup", "wal-dup", "dup-ref1", wager.KindRefund, "30.00", unique("ext-bet"))); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Process(ctx, pwRefInput(t, "p-dup", "ext-ref2", "player-dup", "wal-dup", "dup-ref2", wager.KindRefund, "30.00", unique("ext-bet")))
+	if err != nil {
+		t.Fatalf("segundo refund: %v", err)
+	}
+	if res.State != wager.StateRejected || res.FailureCode != wager.FailureAlreadyReversed {
+		t.Fatalf("result = %+v, want REJECTED/ALREADY_REVERSED", res)
+	}
+	if b, v := walletBalance(t, "wal-dup"); b != 10000 || v != 4 { // rerun não pode movimentar
+		t.Fatalf("wallet = %d v%d, want 10000/4", b, v)
+	}
+	if n := countRows(t, `SELECT count(*) FROM wager_transactions
+		WHERE resolved_reference_id = $1 AND state = 'PROCESSED'
+		  AND kind IN ('REFUND','ROLLBACK')`, bet.TransactionID); n != 1 {
+		t.Fatalf("só uma reversão processada deve existir, veio %d", n)
+	}
+}
+
+func TestProcessReversalMatchismatchRejected(t *testing.T) {
+	ctx := context.Background()
+	f := newTestUoW(t)
+	seedWallet(t, f, "wal-mis", "player-mis", "100.00", 10000)
+	s := newProcessWagerService(t)
+
+	if _, err := s.Process(ctx, pwInput(t, "p-mis", "ext-bet", "player-mis", "wal-mis", "mis-bet", wager.KindBet, "30.00")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Process(ctx, pwRefInput(t, "p-mis", "ext-ref", "player-mis", "wal-mis", "mis-ref", wager.KindRefund, "20.00", unique("ext-bet")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.State != wager.StateRejected || res.FailureCode != wager.FailureReferenceMismatch {
+		t.Fatalf("result = %+v, want REJECTED/REFERENCE_MISMATCH", res)
+	}
+	if b, v := walletBalance(t, "wal-mis"); b != 7000 || v != 3 {
+		t.Fatalf("wallet = %d v%d, want 7000/3", b, v)
+	}
+}
+
+func TestProcessReversalReferenceUnresolvedRollsBack(t *testing.T) {
+	ctx := context.Background()
+	f := newTestUoW(t)
+	seedWallet(t, f, "wal-unr", "player-unr", "100.00", 10000)
+	s := newProcessWagerService(t)
+
+	_, err := s.Process(ctx, pwRefInput(t, "p-unr", "ext-ref", "player-unr", "wal-unr", "unr-ref", wager.KindRefund, "30.00", unique("ext-missing")))
+	if !errors.Is(err, processwager.ErrReferenceUnresolved) {
+		t.Fatalf("err = %v, want ErrReferenceUnresolved", err)
+	}
+	if n := countRows(t, `SELECT count(*) FROM wager_transactions WHERE idempotency_key = $1`, unique("unr-ref")); n != 0 {
+		t.Fatalf("claim deve ser descartado: %d", n)
+	}
+	if b, _ := walletBalance(t, "wal-unr"); b != 10000 {
+		t.Fatalf("wallet = %d, want 10000", b)
+	}
+}
+
+func TestProcessReversalOfRejectedTargetRejected(t *testing.T) {
+	ctx := context.Background()
+	f := newTestUoW(t)
+	seedWallet(t, f, "wal-notok", "player-notok", "5.00", 500)
+	s := newProcessWagerService(t)
+
+	bad, err := s.Process(ctx, pwInput(t, "p-notok", "ext-bet-bad", "player-notok", "wal-notok", "ntk-bet", wager.KindBet, "50.00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bad.State != wager.StateRejected {
+		t.Fatalf("bet = %+v, want REJECTED", bad)
+	}
+	res, err := s.Process(ctx, pwRefInput(t, "p-notok", "ext-ref", "player-notok", "wal-notok", "ntk-ref", wager.KindRefund, "50.00", unique("ext-bet-bad")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.State != wager.StateRejected || res.FailureCode != wager.FailureReferenceNotProcessed {
+		t.Fatalf("result = %+v, want REJECTED/REFERENCE_NOT_PROCESSED", res)
+	}
+	if b, _ := walletBalance(t, "wal-notok"); b != 500 {
+		t.Fatalf("wallet = %d, want 500", b)
 	}
 }

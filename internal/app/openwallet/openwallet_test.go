@@ -167,6 +167,19 @@ func (r *fakeWagerRepo) GetByProviderExternal(ctx context.Context, providerID, e
 	return wager.WagerTransaction{}, postgres.ErrNotFound
 }
 
+func (r *fakeWagerRepo) GetByReferenceExternal(ctx context.Context, providerID, referenceExternalID string) (wager.WagerTransaction, error) {
+	return r.GetByProviderExternal(ctx, providerID, referenceExternalID)
+}
+
+func (r *fakeWagerRepo) GetReversalForReference(ctx context.Context, targetID string) (wager.WagerTransaction, error) {
+	for _, ex := range r.u.live.wagers {
+		if ex.ResolvedReferenceTransactionID() == targetID {
+			return ex, nil
+		}
+	}
+	return wager.WagerTransaction{}, postgres.ErrNotFound
+}
+
 type fakeLedgerRepo struct{ u *fakeUoW }
 
 func (r *fakeLedgerRepo) Insert(ctx context.Context, e ledger.Entry) error {

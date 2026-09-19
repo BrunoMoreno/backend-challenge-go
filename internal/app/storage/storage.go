@@ -29,6 +29,13 @@ type WagerRepository interface {
 	GetByIdempotencyKey(ctx context.Context, key string) (wager.WagerTransaction, error)
 	GetByIdempotencyKeyForUpdate(ctx context.Context, key string) (wager.WagerTransaction, error)
 	GetByProviderExternal(ctx context.Context, providerID, externalID string) (wager.WagerTransaction, error)
+	// GetByReferenceExternal resolve (providerId, referenceExternalTransactionId),
+	// a referência de reversões e de WIN com referência (ARCHITECTURE §6).
+	GetByReferenceExternal(ctx context.Context, providerID, referenceExternalID string) (wager.WagerTransaction, error)
+	// GetReversalForReference devolve a reversão que aponta para o alvo; usada
+	// para detectar reversões já concluídas (ALREADY_REVERSED, índice parcial
+	// UNIQUE (resolved_reference_id) WHERE PROCESSED).
+	GetReversalForReference(ctx context.Context, targetID string) (wager.WagerTransaction, error)
 }
 
 // LedgerRepository agrega o acesso ao ledger dentro de uma transação.
