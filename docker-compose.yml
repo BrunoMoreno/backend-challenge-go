@@ -38,12 +38,14 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.1
-    command: start-dev
+    command: ["start-dev", "--import-realm"]
     environment:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
     ports:
       - "8081:8080"
+    volumes:
+      - ./deploy/keycloak:/opt/keycloak/data/import:ro
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 || exit 1"]
       interval: 5s
@@ -60,6 +62,8 @@ services:
       APP_SQS_ENDPOINT: http://localstack:4566
       APP_SQS_REGION: us-east-1
       APP_KEYCLOAK_ISSUER: http://keycloak:8080/realms/wagering
+      APP_KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
+      APP_KEYCLOAK_CLIENT_ID: wager-api
       APP_LOG_LEVEL: info
     ports:
       - "8080:8080"

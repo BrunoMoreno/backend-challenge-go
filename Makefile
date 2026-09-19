@@ -5,6 +5,7 @@ MIGRATE_IMAGE ?= migrate/migrate:v4.18.1
 .PHONY: up down logs ps clean
 .PHONY: build test test-race test-integration test-e2e vet fmt tidy
 .PHONY: migrate-up migrate-down migrate-create
+.PHONY: kc-token
 
 ## Infra
 up:
@@ -60,3 +61,7 @@ migrate-create:
 	@test -n "$(name)" || (echo "Uso: make migrate-create name=<descricao>"; exit 1)
 	docker run --rm --network host -v "$(CURDIR)/migrations:/migrations" $(MIGRATE_IMAGE) \
 		create -ext sql -dir /migrations -seq "$(name)"
+
+## Keycloak
+kc-token:
+	@./deploy/keycloak/token.sh $(CLIENT)
