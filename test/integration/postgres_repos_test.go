@@ -37,15 +37,14 @@ func migrateURL() string {
 }
 
 // TestMain limpa resíduos de execuções anteriores (role de migração).
+// TRUNCATE não dispara triggers de linha, então consegue limpar o ledger
+// imutável; a aplicação wager_app não tem esse privilégio.
 func TestMain(m *testing.M) {
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, migrateURL())
 	if err == nil {
-		_, _ = pool.Exec(ctx, `DELETE FROM outbox_events`)
-		_, _ = pool.Exec(ctx, `DELETE FROM inbox`)
-		_, _ = pool.Exec(ctx, `DELETE FROM wallet_ledger_entries`)
-		_, _ = pool.Exec(ctx, `DELETE FROM wager_transactions`)
-		_, _ = pool.Exec(ctx, `DELETE FROM wallets`)
+		_, _ = pool.Exec(ctx, `TRUNCATE outbox_events, inbox, wallet_ledger_entries,
+			wager_transactions, wallets RESTART IDENTITY CASCADE`)
 		pool.Close()
 	}
 	os.Exit(m.Run())
@@ -92,6 +91,44 @@ func freshWallet(t *testing.T, id, player, seed string) wallet.Wallet {
 	return mustValue(wallet.New(unique(id), unique(player), mm(t, seed, "BRL")))
 }
 
+// seedWallet cria carteira + OPENING + lançamento de ledger consistente, como
+// o caso de uso fará — a constraint trigger deferida exige balance == último
+// lançamento e version == count+1 no COMMIT. O crédito inicial sobe a versão
+// para 2 (como wallet.New + Credit), alinhado ao domínio.
+func seedWallet(t *testing.T, f *postgres.UnitOfWorkFactory, id, player, seed string, balance int64) {
+	t.Helper()
+	ctx := context.Background()
+	amount := mm(t, seed, "BRL")
+	w := freshWallet(t, id, player, "0.00")
+	if balance != 0 {
+		// O crédito inicial: wallet.New(0) + Credit(initial) → saldo=initial e
+		// versão 2, aplicado ANTES do INSERT para a constraint trigger deferida
+		// ver saldo/versão finais.
+		if _, err := w.Credit(amount); err != nil {
+			t.Fatalf("credit: %v", err)
+		}
+	}
+	uow := beginOK(t, f)
+	if err := uow.WalletRepository.Insert(ctx, w); err != nil {
+		t.Fatalf("insert wallet: %v", err)
+	}
+	if balance != 0 {
+		txID := unique(id + "-op")
+		opening := mustValue(wager.NewOpening(txID, unique(id), unique(player), amount))
+		if err := uow.WagerRepository.Insert(ctx, opening); err != nil {
+			t.Fatalf("insert opening: %v", err)
+		}
+		entry := mustValue(ledger.New(unique(id+"-op-led"), unique(id), txID,
+			ledger.DirectionCredit, amount, mm(t, "0.00", "BRL"), amount, time.Now()))
+		if err := uow.LedgerRepository.Insert(ctx, entry); err != nil {
+			t.Fatalf("insert opening ledger: %v", err)
+		}
+	}
+	if err := uow.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newBET(t *testing.T, id, walletID, playerID, ext, key, hash string) wager.WagerTransaction {
 	t.Helper()
 	return mustValue(wager.NewExternal(unique(id), "provider-a", unique(ext), unique(key),
@@ -110,15 +147,9 @@ func TestWalletRepoOptimisticBalance(t *testing.T) {
 	ctx := context.Background()
 	f := newTestUoW(t)
 
-	uow := beginOK(t, f)
-	if err := uow.WalletRepository.Insert(ctx, freshWallet(t, "wal-w1", "player-1", "100.00")); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
-	if err := uow.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
+	seedWallet(t, f, "wal-w1", "player-1", "100.00", 10000)
 
-	uow = beginOK(t, f)
+	uow := beginOK(t, f)
 	locked, err := uow.WalletRepository.LockForUpdate(ctx, unique("wal-w1"))
 	if err != nil {
 		t.Fatalf("lock: %v", err)
@@ -129,6 +160,16 @@ func TestWalletRepoOptimisticBalance(t *testing.T) {
 	if err := uow.WalletRepository.UpdateBalance(ctx, locked); err != nil {
 		t.Fatalf("update: %v", err)
 	}
+	bet := newBET(t, "tx-debit-1", "wal-w1", "player-1", "ext-d1", "key-d1", "hash-d1")
+	if _, err := uow.WagerRepository.InsertIfAbsent(ctx, bet); err != nil {
+		t.Fatalf("insert bet: %v", err)
+	}
+	entry := mustValue(ledger.New(unique("led-d1"), unique("wal-w1"), unique("tx-debit-1"),
+		ledger.DirectionDebit, mm(t, "80.00", "BRL"), mm(t, "100.00", "BRL"),
+		mm(t, "20.00", "BRL"), time.Now()))
+	if err := uow.LedgerRepository.Insert(ctx, entry); err != nil {
+		t.Fatalf("insert debit ledger: %v", err)
+	}
 	if err := uow.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -138,8 +179,9 @@ func TestWalletRepoOptimisticBalance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if after.Balance().Minor() != 2000 || after.Version() != 2 {
-		t.Fatalf("saldo=%d versão=%d, want minor=2000 versão=2",
+	// 100 - 80 = 20; versão: 1 (criação) + 2 mudanças = 3.
+	if after.Balance().Minor() != 2000 || after.Version() != 3 {
+		t.Fatalf("saldo=%d versão=%d, want minor=2000 versão=3",
 			after.Balance().Minor(), after.Version())
 	}
 	_ = uow.Rollback(ctx)
@@ -149,15 +191,11 @@ func TestOptimisticLockStaleVersion(t *testing.T) {
 	ctx := context.Background()
 	f := newTestUoW(t)
 
-	uow := beginOK(t, f)
+	seedWallet(t, f, "wal-w2", "player-2", "10.00", 1000)
 	w := freshWallet(t, "wal-w2", "player-2", "10.00")
-	if err := uow.WalletRepository.Insert(ctx, w); err != nil {
-		t.Fatal(err)
-	}
-	_ = uow.Commit(ctx)
 
 	// Cópia obsoleta (versão antiga) não sobrescreve o saldo.
-	uow = beginOK(t, f)
+	uow := beginOK(t, f)
 	stale := overrideBalance(w, 0)
 	if err := uow.WalletRepository.UpdateBalance(ctx, stale); err == nil {
 		t.Fatal("esperava ErrOptimisticLock")
@@ -220,15 +258,11 @@ func TestIdempotencyInsert(t *testing.T) {
 	ctx := context.Background()
 	f := newTestUoW(t)
 
-	uow := beginOK(t, f)
-	if err := uow.WalletRepository.Insert(ctx, freshWallet(t, "wal-w4", "player-4", "50.00")); err != nil {
-		t.Fatal(err)
-	}
-	_ = uow.Commit(ctx)
+	seedWallet(t, f, "wal-w4", "player-4", "50.00", 5000)
 
 	bet := newBET(t, "tx-bet-1", "wal-w4", "player-4", "ext-4", "key-4", "hash-4")
 
-	uow = beginOK(t, f)
+	uow := beginOK(t, f)
 	inserted, err := uow.WagerRepository.InsertIfAbsent(ctx, bet)
 	if err != nil {
 		t.Fatalf("primeiro insert: %v", err)

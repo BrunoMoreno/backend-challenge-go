@@ -51,7 +51,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 - [x] 2.1 `ADD` migrations: wallets, wager_transactions, ledger (+triggers/REVOKE), inbox, outbox
 - [x] 2.2 `ADD` roles de migração vs. aplicação; documentar up/down
 - [x] 2.3 `ADD` `UnitOfWork` + repositórios pgx
-- [ ] 2.4 `ADD` constraint trigger deferida saldo × ledger; trigger de terminais imutáveis
+- [x] 2.4 `ADD` constraint trigger deferida saldo × ledger; trigger de terminais imutáveis
 - [ ] 2.5 `TEST` integração: constraints, imutabilidade, `OPENING` único, negatividade, migrations up/down
 
 ### M3 — Casos de uso (G2, G7, RF-01, RF-03..05)
@@ -120,7 +120,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 
 ## 6. Status atual
 
-- Fase: **M2 em andamento** — `UnitOfWork`/repositórios pgx implementados e exercitados (integração com PostgreSQL real, `-race`)
-- Última tarefa concluída: 2.3
-- Próxima tarefa: 2.4 (`constraint trigger` saldo × ledger; terminais imutáveis)
+- Fase: **M2 em andamento** — persistência completa: UnitOfWork/repositórios pgx + constraints de integridade no banco (integração real `-race`)
+- Última tarefa concluída: 2.4
+- Próxima tarefa: 2.5 (testes de integração M2)
 - Bloqueios: —
