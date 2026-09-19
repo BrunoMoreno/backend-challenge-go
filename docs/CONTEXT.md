@@ -63,7 +63,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 - [x] 3.6 `TEST` corrida 100.00 × 2×80.00 e 50 duplicatas (in-process, `-race`)
 
 ### M4 — HTTP + Auth (RF-02, RF-08..10)
-- [ ] 4.1 `ADD` realm Keycloak importável, clients/identidades de teste, script de token
+- [x] 4.1 `ADD` realm Keycloak importável, clients/identidades de teste, script de token
 - [ ] 4.2 `ADD` middleware JWT (JWKS, iss/aud/exp) + matriz de autorização
 - [ ] 4.3 `ADD` handlers de carteira, ledger paginado, envio de operação, consultas de transação
 - [ ] 4.4 `ADD` mapeamento de erros → `docs/API.md` (inclui 503)
@@ -123,7 +123,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 
 ## 6. Status atual
 
-- Fase: **M3 em andamento** — casos de uso; `OpenWallet` (RF-01) e `ProcessWagerTransaction` síncrono (RF-03/RF-04) com `REFUND`/`ROLLBACK`, `PENDING_REFERENCE` e `WIN` com referência implementados e corridas in-process verificadas
-- Última tarefa concluída: 3.6 (`TEST` corrida 100.00 × 2×80.00 e 50 duplicatas, in-process `-race`)
-- Próxima tarefa: M4.1 (`ADD` realm Keycloak importável, clients/identidades de teste, script de token)
+- Fase: **M4 em andamento** — HTTP + Auth; realm Keycloak importável provisionado, resta o middleware JWT/matriz, handlers, mapeamento de erros, reconciliação e health
+- Última tarefa concluída: 4.1 (`ADD` realm Keycloak importável, clients/identidades de teste, script de token)
+- Próxima tarefa: 4.2 (`ADD` middleware JWT (JWKS, iss/aud/exp) + matriz de autorização)
 - Bloqueios: —

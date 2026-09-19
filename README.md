@@ -31,11 +31,18 @@ Correto com múltiplas instâncias e falhas entre etapas.
 cp .env.example .env
 make up          # sobe postgres, keycloak e localstack
 make migrate-up  # aplica migrations
+make kc-token CLIENT=provider-a   # access token OIDC de um provedor de teste
 ```
 
 > **Roles do PostgreSQL:** migrations rodam como `app` (dona do schema, via
 > `DATABASE_URL` no Makefile); a aplicação conecta como `wager_app`, role sem
 > escrita no ledger (append-only) e sem DDL. Ver `migrations/000006_create_roles.up.sql`.
+
+> **Keycloak (auth):** o realm `wagering` é importado no boot do container a
+> partir de `deploy/keycloak/` (roles `wagering:provider`, `wagering:internal`,
+> `wallet:internal`; clients `provider-a`, `provider-b`, `wagering-internal` e
+> `wager-api`). `make kc-token CLIENT=<client>` emite um token de teste por
+> `client_credentials`. Detalhes em `deploy/keycloak/README.md` e `docs/API.md`.
 
 ## Testes
 
@@ -57,7 +64,7 @@ make migrate-down  # reverte a última migration
 
 ## Status de implementação
 
-M2 (persistência) em andamento — veja `docs/CONTEXT.md` para a fase atual e próximas tarefas.
+M4 (HTTP + auth) em andamento — veja `docs/CONTEXT.md` para a fase atual e próximas tarefas.
 
 <!-- Preencher no M10: env completo, filas, migrations detalhadas, exemplos de curl autenticados,
      procedimentos de integração/e2e e validação em clone limpo. -->
