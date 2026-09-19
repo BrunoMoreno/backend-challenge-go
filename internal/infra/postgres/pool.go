@@ -60,6 +60,10 @@ func mapError(err error) error {
 			return ErrSerialization
 		case "40P01":
 			return ErrDeadlock
+		case "P0001":
+			// raise via trigger/função de integridade (ledger imutável,
+			// terminais imutáveis, consistência deferida saldo × ledger).
+			return fmt.Errorf("%w: %s", ErrCheck, pgErr.Message)
 		}
 	}
 	return fmt.Errorf("%w: %v", ErrUnexpected, err)

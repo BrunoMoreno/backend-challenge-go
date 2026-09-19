@@ -52,7 +52,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 - [x] 2.2 `ADD` roles de migração vs. aplicação; documentar up/down
 - [x] 2.3 `ADD` `UnitOfWork` + repositórios pgx
 - [x] 2.4 `ADD` constraint trigger deferida saldo × ledger; trigger de terminais imutáveis
-- [ ] 2.5 `TEST` integração: constraints, imutabilidade, `OPENING` único, negatividade, migrations up/down
+- [x] 2.5 `TEST` integração: constraints, imutabilidade, `OPENING` único, negatividade, migrations up/down
 
 ### M3 — Casos de uso (G2, G7, RF-01, RF-03..05)
 - [ ] 3.1 `ADD` `OpenWallet`
@@ -117,10 +117,11 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 - **SDK SQS:** `aws-sdk-go-v2`.
 - **Roles de banco:** `app` (migração, dona do schema) vs `wager_app` (aplicação, sem escrita no ledger e sem DDL), criados na migration `000006` (`wager_app` por padrão no Compose/.env).
 - **Interpretações `ARCHITECTURE.md` §14: todas as 7 confirmadas** — sem normalização monetária; 1 reversão por alvo; `WIN` com referência segue reversões; provedor opera qualquer carteira (consulta a transações isolada); identidade SQS depende do broker; carteira inexistente = `404`; `LOSS` `0.00` sem ledger/versão.
+- **Integridade no banco (migration `000008`):** ledger append-only (trigger `BEFORE UPDATE/DELETE`, vale até para o role de migração; `wager_app` não tem privilégio), terminais `PROCESSED`/`REJECTED`/`FAILED` imutáveis (campos de retry continuam mutáveis) e `constraint trigger` deferida no COMMIT valida `balance_minor` = último `balance_after` e `version` = nº de lançamentos + 1. `RAISE` (SQLSTATE `P0001`) é mapeado para `postgres.ErrCheck`; limpeza de teste usa `TRUNCATE` (não dispara triggers).
 
 ## 6. Status atual
 
-- Fase: **M2 em andamento** — persistência completa: UnitOfWork/repositórios pgx + constraints de integridade no banco (integração real `-race`)
-- Última tarefa concluída: 2.4
-- Próxima tarefa: 2.5 (testes de integração M2)
+- Fase: **M2 concluída** — persistência completa e verificada no PostgreSQL real (`-race`): UnitOfWork/repositórios pgx, constraints de integridade, migrations up/down validadas do zero
+- Última tarefa concluída: 2.5
+- Próxima tarefa: 3.1 (`OpenWallet`)
 - Bloqueios: —
