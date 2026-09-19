@@ -145,6 +145,16 @@ func (r *fakeWagerRepo) UpdateTerminal(ctx context.Context, t wager.WagerTransac
 	return postgres.ErrNotFound
 }
 
+func (r *fakeWagerRepo) UpdatePendingReference(ctx context.Context, t wager.WagerTransaction) error {
+	for i, ex := range r.u.live.wagers {
+		if ex.ID() == t.ID() {
+			r.u.live.wagers[i] = t
+			return nil
+		}
+	}
+	return postgres.ErrNotFound
+}
+
 func (r *fakeWagerRepo) GetByIdempotencyKey(ctx context.Context, key string) (wager.WagerTransaction, error) {
 	for _, ex := range r.u.live.wagers {
 		if ex.IdempotencyKey() == key {

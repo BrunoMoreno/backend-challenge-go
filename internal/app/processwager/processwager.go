@@ -1,7 +1,6 @@
 // Package processwager implementa o processamento síncrono de uma operação do
-// provedor (BET/WIN/LOSS) com persistência da rejeição e idempotência de
-// replay (RF-03, G2). REFUND/ROLLBACK e WIN com referência são cobertos nas
-// tarefas 3.3/3.4 (PENDING_REFERENCE).
+// provedor (BET/WIN/LOSS/REFUND/ROLLBACK) com persistência da rejeição,
+// persistência de PENDING_REFERENCE e idempotência de replay (RF-03, G2).
 package processwager
 
 import (
@@ -25,7 +24,6 @@ import (
 var (
 	ErrMissingIdempotencyKey  = errors.New("processwager: idempotencyKey ausente")
 	ErrUnsupportedKind        = errors.New("processwager: kind não suportado neste canal/fase")
-	ErrWinReferencePending    = errors.New("processwager: WIN com referência aguarda PENDING_REFERENCE (3.4)")
 	ErrInvalidAmountForKind   = errors.New("processwager: valor inválido para o kind")
 	ErrWalletNotFound         = errors.New("processwager: carteira inexistente")
 	ErrWalletCurrencyMismatch = errors.New("processwager: moeda do payload difere da carteira")
@@ -34,9 +32,6 @@ var (
 	// ErrStaleClaim indica que o dono de um claim concorrente desfez a
 	// transação; o Process repete o ciclo com uma transação nova.
 	ErrStaleClaim = errors.New("processwager: claim concorrente desfeito, reprocessar")
-	// ErrReferenceUnresolved indica referência ausente ou ainda não terminal;
-	// em 3.3 nada é persistido — a persistência PENDING_REFERENCE é a 3.4.
-	ErrReferenceUnresolved = errors.New("processwager: referência não resolvida (PENDING_REFERENCE em 3.4)")
 )
 
 // Input é a operação do provedor já validada estruturalmente (o transporte
@@ -119,9 +114,6 @@ func validate(in Input) error {
 	case wager.KindBet, wager.KindWin, wager.KindLoss, wager.KindRefund, wager.KindRollback:
 	default:
 		return ErrUnsupportedKind
-	}
-	if in.Kind == wager.KindWin && in.ReferenceExternalTransactionID != "" {
-		return ErrWinReferencePending
 	}
 	if in.Kind == wager.KindLoss {
 		if !in.Amount.IsZero() {
@@ -238,6 +230,26 @@ func (s *Service) apply(ctx context.Context, uow storage.UnitOfWork, tx wager.Wa
 		return Result{}, ErrWalletCurrencyMismatch
 	}
 
+	// Resolução da referência (reversões e WIN com referência): alvo ausente
+	// ou ainda não terminal → PENDING_REFERENCE persistido; alvo REJECTED/FAILED
+	// → rejeição imediata REFERENCE_NOT_PROCESSED (ARCHITECTURE §6).
+	var target wager.WagerTransaction
+	var pending bool
+	var rej wager.FailureCode
+	var rerr error
+	if in.ReferenceExternalTransactionID != "" {
+		target, pending, rej, rerr = resolveReference(ctx, uow, in.ProviderID, in.ReferenceExternalTransactionID)
+		if rerr != nil {
+			return Result{}, rerr
+		}
+		if pending {
+			return s.pendReference(ctx, uow, &tx)
+		}
+		if rej != "" {
+			return s.reject(ctx, uow, &tx, rej)
+		}
+	}
+
 	before := wal.Balance()
 	var rejection wager.FailureCode
 	var moveDir ledger.Direction
@@ -247,6 +259,21 @@ func (s *Service) apply(ctx context.Context, uow storage.UnitOfWork, tx wager.Wa
 			return Result{}, err
 		}
 	case wager.KindWin:
+		if in.ReferenceExternalTransactionID != "" {
+			if err := wager.ValidateWinReference(tx, target); err != nil {
+				switch {
+				case errors.Is(err, wager.ErrReferenceMismatch):
+					return s.reject(ctx, uow, &tx, wager.FailureReferenceMismatch)
+				case errors.Is(err, wager.ErrInvalidReferenceKind):
+					return s.reject(ctx, uow, &tx, wager.FailureInvalidReferenceKind)
+				default:
+					return Result{}, err
+				}
+			}
+			if err := tx.ResolveReference(target.ID()); err != nil {
+				return Result{}, err
+			}
+		}
 		after, err := wal.Credit(tx.Amount())
 		if err != nil {
 			return Result{}, err
@@ -277,48 +304,48 @@ func (s *Service) apply(ctx context.Context, uow storage.UnitOfWork, tx wager.Wa
 			return Result{}, err
 		}
 	case wager.KindRefund, wager.KindRollback:
-		dir, code, err := s.applyReversal(ctx, uow, &tx, &wal, before)
+		// Alvo PROCESSED garantido na resolução acima. Slot único de reversão:
+		// uma reversão processada por alvo (índice parcial no banco).
+		if rev, rerr := uow.Wagers().GetReversalForReference(ctx, target.ID()); rerr == nil && rev.State() == wager.StateProcessed {
+			return s.reject(ctx, uow, &tx, wager.FailureAlreadyReversed)
+		} else if rerr != nil && !errors.Is(rerr, postgres.ErrNotFound) {
+			return Result{}, rerr
+		}
+		mv, rerr := wager.ResolveReversal(tx, target)
+		if rerr != nil {
+			switch {
+			case errors.Is(rerr, wager.ErrReferenceMismatch):
+				return s.reject(ctx, uow, &tx, wager.FailureReferenceMismatch)
+			case errors.Is(rerr, wager.ErrInvalidReferenceKind):
+				return s.reject(ctx, uow, &tx, wager.FailureInvalidReferenceKind)
+			default:
+				return Result{}, rerr
+			}
+		}
+		after, err := applyMovement(&wal, mv)
 		if err != nil {
+			if errors.Is(err, wallet.ErrInsufficientFunds) {
+				return s.reject(ctx, uow, &tx, wager.FailureReversalInsufficientFunds)
+			}
 			return Result{}, err
 		}
-		if code != "" {
-			rejection = code
-			break
+		if err := tx.ResolveReference(target.ID()); err != nil {
+			return Result{}, err
 		}
-		moveDir = dir
+		if err := tx.MarkProcessed(after); err != nil {
+			return Result{}, err
+		}
+		moveDir = mv.Direction
+		if err := uow.Ledger().Insert(ctx, mustLedger(s.newID(), wal.ID(), tx.ID(),
+			moveDir, mv.Amount, before, after)); err != nil {
+			return Result{}, err
+		}
 	default:
 		return Result{}, ErrUnsupportedKind
 	}
 
 	if rejection != "" {
-		if err := tx.Reject(rejection); err != nil {
-			return Result{}, err
-		}
-	}
-
-	if tx.State() == wager.StateRejected {
-		if err := uow.Wagers().UpdateTerminal(ctx, tx); err != nil {
-			return Result{}, err
-		}
-		env, err := events.NewWagerTransactionRejected(s.newID(), tx.ID(), "",
-			events.WagerTransactionRejectedData{
-				TransactionID:         tx.ID(),
-				ProviderID:            tx.ProviderID(),
-				ExternalTransactionID: tx.ExternalTransactionID(),
-				Kind:                  tx.Kind(),
-				FailureCode:           tx.FailureCode(),
-			})
-		if err != nil {
-			return Result{}, err
-		}
-		if err := uow.Outbox().Insert(ctx, env); err != nil {
-			return Result{}, err
-		}
-		if err := uow.Commit(ctx); err != nil {
-			return Result{}, err
-		}
-		return Result{TransactionID: tx.ID(), State: wager.StateRejected,
-			FailureCode: tx.FailureCode()}, nil
+		return s.reject(ctx, uow, &tx, rejection)
 	}
 
 	if err := uow.Wagers().UpdateTerminal(ctx, tx); err != nil {
@@ -370,60 +397,82 @@ func (s *Service) apply(ctx context.Context, uow storage.UnitOfWork, tx wager.Wa
 	return Result{TransactionID: tx.ID(), State: wager.StateProcessed, Balance: &b}, nil
 }
 
-func (s *Service) applyReversal(ctx context.Context, uow storage.UnitOfWork, tx *wager.WagerTransaction,
-	wal *wallet.Wallet, before money.Money) (ledger.Direction, wager.FailureCode, error) {
-	target, err := uow.Wagers().GetByReferenceExternal(ctx, tx.ProviderID(), tx.ReferenceExternalTransactionID())
+// resolveReference classifica o alvo de uma referência (ARCHITECTURE §6):
+// referência inexistente ou alvo ainda não-terminal → pending, para
+// PENDING_REFERENCE; alvo terminal REJECTED/FAILED → rej = REFERENCE_NOT_PROCESSED;
+// alvo PROCESSED → devolvido em target para validação e movimentação.
+func resolveReference(ctx context.Context, uow storage.UnitOfWork, providerID, referenceExternalID string) (wager.WagerTransaction, bool, wager.FailureCode, error) {
+	target, err := uow.Wagers().GetByReferenceExternal(ctx, providerID, referenceExternalID)
 	if err != nil {
 		if errors.Is(err, postgres.ErrNotFound) {
-			return "", "", ErrReferenceUnresolved
+			return wager.WagerTransaction{}, true, "", nil
 		}
-		return "", "", err
+		return wager.WagerTransaction{}, false, "", err
 	}
-	// Alvo ainda não terminal: permanece pendente (PENDING_REFERENCE em 3.4).
 	if !target.IsTerminal() {
-		return "", "", ErrReferenceUnresolved
+		return wager.WagerTransaction{}, true, "", nil
 	}
-
-	// Uma única reversão processada por alvo (índice parcial no banco) — a
-	// checagem aqui devolve a rejeição de negócio correta antes de movimentar.
-	if rev, rerr := uow.Wagers().GetReversalForReference(ctx, target.ID()); rerr == nil && rev.State() == wager.StateProcessed {
-		return "", wager.FailureAlreadyReversed, nil
-	} else if rerr != nil && !errors.Is(rerr, postgres.ErrNotFound) {
-		return "", "", rerr
+	if target.State() != wager.StateProcessed {
+		return wager.WagerTransaction{}, false, wager.FailureReferenceNotProcessed, nil
 	}
+	return target, false, "", nil
+}
 
-	mv, rerr := wager.ResolveReversal(*tx, target)
-	if rerr != nil {
-		switch {
-		case errors.Is(rerr, wager.ErrReferenceNotProcessed):
-			return "", wager.FailureReferenceNotProcessed, nil
-		case errors.Is(rerr, wager.ErrReferenceMismatch):
-			return "", wager.FailureReferenceMismatch, nil
-		case errors.Is(rerr, wager.ErrInvalidReferenceKind):
-			return "", wager.FailureInvalidReferenceKind, nil
-		default:
-			return "", "", rerr
-		}
+// pendReference persiste PENDING_REFERENCE (mantendo o claim de idempotência,
+// sem movimentar saldo/ledger) e o evento de espera. Devolve o Result do 202;
+// a resolução posterior fica a cargo do worker de referências (M6).
+func (s *Service) pendReference(ctx context.Context, uow storage.UnitOfWork, tx *wager.WagerTransaction) (Result, error) {
+	if err := tx.PendForReference(); err != nil {
+		return Result{}, err
 	}
-
-	after, err := applyMovement(wal, mv)
+	if err := uow.Wagers().UpdatePendingReference(ctx, *tx); err != nil {
+		return Result{}, err
+	}
+	env, err := events.NewWagerTransactionPendingReference(s.newID(), tx.ID(), "",
+		events.WagerTransactionPendingReferenceData{
+			TransactionID:                  tx.ID(),
+			ProviderID:                     tx.ProviderID(),
+			ExternalTransactionID:          tx.ExternalTransactionID(),
+			ReferenceExternalTransactionID: tx.ReferenceExternalTransactionID(),
+		})
 	if err != nil {
-		if errors.Is(err, wallet.ErrInsufficientFunds) {
-			return "", wager.FailureReversalInsufficientFunds, nil
-		}
-		return "", "", err
+		return Result{}, err
 	}
-	if err := tx.ResolveReference(target.ID()); err != nil {
-		return "", "", err
+	if err := uow.Outbox().Insert(ctx, env); err != nil {
+		return Result{}, err
 	}
-	if err := tx.MarkProcessed(after); err != nil {
-		return "", "", err
+	if err := uow.Commit(ctx); err != nil {
+		return Result{}, err
 	}
-	if err := uow.Ledger().Insert(ctx, mustLedger(s.newID(), wal.ID(), tx.ID(),
-		mv.Direction, mv.Amount, before, after)); err != nil {
-		return "", "", err
+	return Result{TransactionID: tx.ID(), State: wager.StatePendingReference}, nil
+}
+
+// reject persiste a rejeição definitiva e o evento correspondente.
+func (s *Service) reject(ctx context.Context, uow storage.UnitOfWork, tx *wager.WagerTransaction, code wager.FailureCode) (Result, error) {
+	if err := tx.Reject(code); err != nil {
+		return Result{}, err
 	}
-	return mv.Direction, "", nil
+	if err := uow.Wagers().UpdateTerminal(ctx, *tx); err != nil {
+		return Result{}, err
+	}
+	env, err := events.NewWagerTransactionRejected(s.newID(), tx.ID(), "",
+		events.WagerTransactionRejectedData{
+			TransactionID:         tx.ID(),
+			ProviderID:            tx.ProviderID(),
+			ExternalTransactionID: tx.ExternalTransactionID(),
+			Kind:                  tx.Kind(),
+			FailureCode:           tx.FailureCode(),
+		})
+	if err != nil {
+		return Result{}, err
+	}
+	if err := uow.Outbox().Insert(ctx, env); err != nil {
+		return Result{}, err
+	}
+	if err := uow.Commit(ctx); err != nil {
+		return Result{}, err
+	}
+	return Result{TransactionID: tx.ID(), State: wager.StateRejected, FailureCode: code}, nil
 }
 
 // applyMovement executa o movimento calculado (débito ou crédito) na carteira.

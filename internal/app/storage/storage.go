@@ -26,6 +26,10 @@ type WagerRepository interface {
 	Insert(ctx context.Context, t wager.WagerTransaction) error
 	InsertIfAbsent(ctx context.Context, t wager.WagerTransaction) (bool, error)
 	UpdateTerminal(ctx context.Context, t wager.WagerTransaction) error
+	// UpdatePendingReference registra a espera pela referência (estado
+	// PENDING_REFERENCE) mantendo o IDEMPOTENCY claim — o worker de referências
+	// (M6) assume a resolução posterior.
+	UpdatePendingReference(ctx context.Context, t wager.WagerTransaction) error
 	GetByIdempotencyKey(ctx context.Context, key string) (wager.WagerTransaction, error)
 	GetByIdempotencyKeyForUpdate(ctx context.Context, key string) (wager.WagerTransaction, error)
 	GetByProviderExternal(ctx context.Context, providerID, externalID string) (wager.WagerTransaction, error)
