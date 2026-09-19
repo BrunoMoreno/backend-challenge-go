@@ -59,7 +59,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 - [x] 3.2 `ADD` `ProcessWagerTransaction` síncrono (`BET/WIN/LOSS`) com idempotência e rejeição persistida
 - [x] 3.3 `ADD` `REFUND`/`ROLLBACK` com resolução de referência (`ARCHITECTURE` §6)
 - [x] 3.4 `ADD` `PENDING_REFERENCE` (persistência + evento)
-- [ ] 3.5 `TEST` replay, conflito de hash, outra chave para mesma `(provider, extId)`, saldo original no replay
+- [x] 3.5 `TEST` replay, conflito de hash, outra chave para mesma `(provider, extId)`, saldo original no replay
 - [ ] 3.6 `TEST` corrida 100.00 × 2×80.00 e 50 duplicatas (in-process, `-race`)
 
 ### M4 — HTTP + Auth (RF-02, RF-08..10)
@@ -124,6 +124,6 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 ## 6. Status atual
 
 - Fase: **M3 em andamento** — casos de uso; `OpenWallet` (RF-01) e `ProcessWagerTransaction` síncrono (RF-03/RF-04) com `REFUND`/`ROLLBACK`, `PENDING_REFERENCE` e `WIN` com referência implementados e verificados
-- Última tarefa concluída: 3.4 (`PENDING_REFERENCE`: persistência + evento)
-- Próxima tarefa: 3.5 (`TEST` replay, conflito de hash, outra chave para mesma `(provider, extId)`, saldo original no replay)
+- Última tarefa concluída: 3.5 (`TEST` replay e conflitos de idempotência)
+- Próxima tarefa: 3.6 (`TEST` corrida 100.00 × 2×80.00 e 50 duplicatas, in-process `-race`)
 - Bloqueios: —

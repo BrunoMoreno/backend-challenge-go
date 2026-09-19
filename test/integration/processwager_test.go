@@ -225,6 +225,51 @@ func TestProcessIdempotentReplayKeepsOriginalResult(t *testing.T) {
 	if n := countWagersForWallet(t, "wal-rep"); n != 2 {
 		t.Fatalf("replay criou transação nova: %d, want 2", n)
 	}
+	if n := countEventsForTx(t, first.TransactionID); n != 2 {
+		t.Fatalf("replay duplicou eventos: %d, want 2", n)
+	}
+}
+
+func TestProcessReplayReturnsOriginalBalanceAfterWalletAdvanced(t *testing.T) {
+	ctx := context.Background()
+	f := newTestUoW(t)
+	seedWallet(t, f, "wal-adv", "player-adv", "100.00", 10000)
+	s := newProcessWagerService(t)
+
+	bet := pwInput(t, "p-adv", "ext-bet", "player-adv", "wal-adv", "adv-bet", wager.KindBet, "30.00")
+	first, err := s.Process(ctx, bet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Process(ctx, pwInput(t, "p-adv", "ext-win", "player-adv", "wal-adv", "adv-win", wager.KindWin, "50.00")); err != nil {
+		t.Fatal(err)
+	}
+	if b, v := walletBalance(t, "wal-adv"); b != 12000 || v != 4 {
+		t.Fatalf("pré-replay: wallet = %d v%d, want 12000/4", b, v)
+	}
+
+	// Replay do BET devolve o saldo ORIGINAL (result_balance persistido),
+	// não o saldo atual da carteira — e não movimenta nada.
+	second, err := s.Process(ctx, bet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.IdempotentReplay || second.TransactionID != first.TransactionID ||
+		second.Balance == nil || second.Balance.String() != "70.00" {
+		t.Fatalf("replay = %+v, want idem %s com saldo original 70.00", second, first.TransactionID)
+	}
+	if b, v := walletBalance(t, "wal-adv"); b != 12000 || v != 4 {
+		t.Fatalf("replay movimentou a carteira: %d v%d, want 12000/4", b, v)
+	}
+	if n := countWagersForWallet(t, "wal-adv"); n != 3 { // OPENING + BET + WIN
+		t.Fatalf("replay criou transação: %d, want 3", n)
+	}
+	if n := countLedgerForWallet(t, "wal-adv"); n != 3 { // open + bet + win
+		t.Fatalf("replay gerou lançamento: %d, want 3", n)
+	}
+	if n := countEventsForTx(t, first.TransactionID); n != 2 {
+		t.Fatalf("replay duplicou eventos do BET: %d, want 2", n)
+	}
 }
 
 func TestProcessIdempotencyConflict(t *testing.T) {
@@ -233,15 +278,22 @@ func TestProcessIdempotencyConflict(t *testing.T) {
 	seedWallet(t, f, "wal-conf", "player-conf", "100.00", 10000)
 	s := newProcessWagerService(t)
 
-	if _, err := s.Process(ctx, pwInput(t, "p-conf", "ext-a", "player-conf", "wal-conf", "key-x", wager.KindBet, "30.00")); err != nil {
+	first, err := s.Process(ctx, pwInput(t, "p-conf", "ext-a", "player-conf", "wal-conf", "key-x", wager.KindBet, "30.00"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	_, err := s.Process(ctx, pwInput(t, "p-conf", "ext-b", "player-conf", "wal-conf", "key-x", wager.KindBet, "40.00"))
+	_, err = s.Process(ctx, pwInput(t, "p-conf", "ext-b", "player-conf", "wal-conf", "key-x", wager.KindBet, "40.00"))
 	if !errors.Is(err, processwager.ErrIdempotencyConflict) {
 		t.Fatalf("err = %v, want ErrIdempotencyConflict", err)
 	}
 	if b, _ := walletBalance(t, "wal-conf"); b != 7000 {
 		t.Fatalf("conflito deve ser atômico: saldo=%d, want 7000", b)
+	}
+	if n := countRows(t, `SELECT count(*) FROM wager_transactions WHERE idempotency_key = $1`, unique("key-x")); n != 1 {
+		t.Fatalf("conflito de hash não pode criar outra linha: %d", n)
+	}
+	if n := countEventsForTx(t, first.TransactionID); n != 2 {
+		t.Fatalf("conflito de hash não pode duplicar eventos: %d", n)
 	}
 }
 
@@ -251,15 +303,24 @@ func TestProcessExternalTransactionConflict(t *testing.T) {
 	seedWallet(t, f, "wal-ext", "player-ext", "100.00", 10000)
 	s := newProcessWagerService(t)
 
-	if _, err := s.Process(ctx, pwInput(t, "p-ext", "ext-x", "player-ext", "wal-ext", "key-1", wager.KindBet, "30.00")); err != nil {
+	first, err := s.Process(ctx, pwInput(t, "p-ext", "ext-x", "player-ext", "wal-ext", "key-1", wager.KindBet, "30.00"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	_, err := s.Process(ctx, pwInput(t, "p-ext", "ext-x", "player-ext", "wal-ext", "key-2", wager.KindBet, "30.00"))
+	// Mesma (provider, externalId) com outra chave E outro conteúdo: o
+	// constrangimento é estrutural — independe de kind/valor.
+	_, err = s.Process(ctx, pwInput(t, "p-ext", "ext-x", "player-ext", "wal-ext", "key-2", wager.KindWin, "80.00"))
 	if !errors.Is(err, processwager.ErrExternalConflict) {
 		t.Fatalf("err = %v, want ErrExternalConflict", err)
 	}
 	if b, _ := walletBalance(t, "wal-ext"); b != 7000 {
 		t.Fatalf("conflito deve ser atômico: saldo=%d, want 7000", b)
+	}
+	if n := countRows(t, `SELECT count(*) FROM wager_transactions WHERE idempotency_key = $1`, unique("key-2")); n != 0 {
+		t.Fatalf("linha da outra chave não pode persistir: %d", n)
+	}
+	if n := countEventsForTx(t, first.TransactionID); n != 2 {
+		t.Fatalf("eventos devem permanecer os do primeiro envio: %d", n)
 	}
 }
 
