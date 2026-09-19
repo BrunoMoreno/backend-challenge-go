@@ -26,6 +26,9 @@ type WagerRepository interface {
 	Insert(ctx context.Context, t wager.WagerTransaction) error
 	InsertIfAbsent(ctx context.Context, t wager.WagerTransaction) (bool, error)
 	UpdateTerminal(ctx context.Context, t wager.WagerTransaction) error
+	GetByIdempotencyKey(ctx context.Context, key string) (wager.WagerTransaction, error)
+	GetByIdempotencyKeyForUpdate(ctx context.Context, key string) (wager.WagerTransaction, error)
+	GetByProviderExternal(ctx context.Context, providerID, externalID string) (wager.WagerTransaction, error)
 }
 
 // LedgerRepository agrega o acesso ao ledger dentro de uma transação.

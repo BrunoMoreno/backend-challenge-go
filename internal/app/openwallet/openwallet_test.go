@@ -145,6 +145,28 @@ func (r *fakeWagerRepo) UpdateTerminal(ctx context.Context, t wager.WagerTransac
 	return postgres.ErrNotFound
 }
 
+func (r *fakeWagerRepo) GetByIdempotencyKey(ctx context.Context, key string) (wager.WagerTransaction, error) {
+	for _, ex := range r.u.live.wagers {
+		if ex.IdempotencyKey() == key {
+			return ex, nil
+		}
+	}
+	return wager.WagerTransaction{}, postgres.ErrNotFound
+}
+
+func (r *fakeWagerRepo) GetByIdempotencyKeyForUpdate(ctx context.Context, key string) (wager.WagerTransaction, error) {
+	return r.GetByIdempotencyKey(ctx, key)
+}
+
+func (r *fakeWagerRepo) GetByProviderExternal(ctx context.Context, providerID, externalID string) (wager.WagerTransaction, error) {
+	for _, ex := range r.u.live.wagers {
+		if ex.ProviderID() == providerID && ex.ExternalTransactionID() == externalID {
+			return ex, nil
+		}
+	}
+	return wager.WagerTransaction{}, postgres.ErrNotFound
+}
+
 type fakeLedgerRepo struct{ u *fakeUoW }
 
 func (r *fakeLedgerRepo) Insert(ctx context.Context, e ledger.Entry) error {

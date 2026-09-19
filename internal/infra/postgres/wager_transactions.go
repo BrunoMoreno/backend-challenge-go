@@ -190,6 +190,14 @@ func (r *WagerTransactionRepository) GetByIdempotencyKey(ctx context.Context, ke
 		`SELECT `+wagerColumns+` FROM wager_transactions WHERE idempotency_key = $1`, key))
 }
 
+// GetByIdempotencyKeyForUpdate aguarda a conclusão de outro processador da mesma
+// chave: trava a linha até o claim alheio commitar/rollback e devolve o estado
+// final já visível (idempotência com corrida, ARCHITECTURE §4).
+func (r *WagerTransactionRepository) GetByIdempotencyKeyForUpdate(ctx context.Context, key string) (wager.WagerTransaction, error) {
+	return scanWager(r.tx.QueryRow(ctx,
+		`SELECT `+wagerColumns+` FROM wager_transactions WHERE idempotency_key = $1 FOR UPDATE`, key))
+}
+
 // GetByProviderExternal lê pela identidade externa (provider, externalTransactionId).
 func (r *WagerTransactionRepository) GetByProviderExternal(ctx context.Context, providerID, externalID string) (wager.WagerTransaction, error) {
 	return scanWager(r.tx.QueryRow(ctx,
