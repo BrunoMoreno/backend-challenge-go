@@ -64,7 +64,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 
 ### M4 — HTTP + Auth (RF-02, RF-08..10)
 - [x] 4.1 `ADD` realm Keycloak importável, clients/identidades de teste, script de token
-- [ ] 4.2 `ADD` middleware JWT (JWKS, iss/aud/exp) + matriz de autorização
+- [x] 4.2 `ADD` middleware JWT (JWKS, iss/aud/exp) + matriz de autorização
 - [ ] 4.3 `ADD` handlers de carteira, ledger paginado, envio de operação, consultas de transação
 - [ ] 4.4 `ADD` mapeamento de erros → `docs/API.md` (inclui 503)
 - [ ] 4.5 `ADD` reconciliação (snapshot `REPEATABLE READ`)
@@ -123,7 +123,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 
 ## 6. Status atual
 
-- Fase: **M4 em andamento** — HTTP + Auth; realm Keycloak importável provisionado, resta o middleware JWT/matriz, handlers, mapeamento de erros, reconciliação e health
-- Última tarefa concluída: 4.1 (`ADD` realm Keycloak importável, clients/identidades de teste, script de token)
-- Próxima tarefa: 4.2 (`ADD` middleware JWT (JWKS, iss/aud/exp) + matriz de autorização)
+- Fase: **M4 em andamento** — HTTP + Auth; realm importável e middleware JWT/matriz de autorização prontos; restam handlers, mapeamento de erros, reconciliação e health ready
+- Última tarefa concluída: 4.2 (`ADD` middleware JWT (JWKS, iss/aud/exp) + matriz de autorização)
+- Próxima tarefa: 4.3 (`ADD` handlers de carteira, ledger paginado, envio de operação, consultas de transação)
 - Bloqueios: —

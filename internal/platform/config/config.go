@@ -22,6 +22,10 @@ type Config struct {
 	SQSRegion string
 	// KeycloakIssuer é o issuer OIDC do Keycloak.
 	KeycloakIssuer string
+	// KeycloakJWKSURL é a URL do JWKS usado para validar a assinatura dos tokens.
+	KeycloakJWKSURL string
+	// KeycloakAudience é o `aud` esperado nos tokens de negócio (clientId do resource server).
+	KeycloakAudience string
 	// LogLevel é o nível do logger: debug, info, warn ou error.
 	LogLevel string
 }
@@ -29,13 +33,15 @@ type Config struct {
 // Load lê as variáveis de ambiente e devolve a configuração.
 func Load() (Config, error) {
 	cfg := Config{
-		AppRoles:       splitCSV(os.Getenv("APP_ROLES")),
-		HTTPAddr:       envOr("APP_HTTP_ADDR", ":8080"),
-		DatabaseURL:    os.Getenv("APP_DATABASE_URL"),
-		SQSEndpoint:    envOr("APP_SQS_ENDPOINT", "http://localhost:4566"),
-		SQSRegion:      envOr("APP_SQS_REGION", "us-east-1"),
-		KeycloakIssuer: os.Getenv("APP_KEYCLOAK_ISSUER"),
-		LogLevel:       envOr("APP_LOG_LEVEL", "info"),
+		AppRoles:         splitCSV(os.Getenv("APP_ROLES")),
+		HTTPAddr:         envOr("APP_HTTP_ADDR", ":8080"),
+		DatabaseURL:      os.Getenv("APP_DATABASE_URL"),
+		SQSEndpoint:      envOr("APP_SQS_ENDPOINT", "http://localhost:4566"),
+		SQSRegion:        envOr("APP_SQS_REGION", "us-east-1"),
+		KeycloakIssuer:   os.Getenv("APP_KEYCLOAK_ISSUER"),
+		KeycloakJWKSURL:  os.Getenv("APP_KEYCLOAK_JWKS_URL"),
+		KeycloakAudience: os.Getenv("APP_KEYCLOAK_CLIENT_ID"),
+		LogLevel:         envOr("APP_LOG_LEVEL", "info"),
 	}
 
 	if err := cfg.validate(); err != nil {

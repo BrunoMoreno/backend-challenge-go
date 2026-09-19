@@ -42,7 +42,9 @@ make kc-token CLIENT=provider-a   # access token OIDC de um provedor de teste
 > partir de `deploy/keycloak/` (roles `wagering:provider`, `wagering:internal`,
 > `wallet:internal`; clients `provider-a`, `provider-b`, `wagering-internal` e
 > `wager-api`). `make kc-token CLIENT=<client>` emite um token de teste por
-> `client_credentials`. Detalhes em `deploy/keycloak/README.md` e `docs/API.md`.
+> `client_credentials`. A API valida `Bearer` JWT via JWKS (assinatura RS256,
+> `iss`, `aud`, `exp`) e aplica a matriz de `docs/API.md` §2. Detalhes em
+> `deploy/keycloak/README.md` e `docs/API.md`.
 
 ## Testes
 
