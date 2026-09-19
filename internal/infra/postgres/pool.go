@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/BrunoMoreno/backend-challenge-go/internal/app/storage"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -103,6 +104,13 @@ func (u *UnitOfWork) Rollback(ctx context.Context) error {
 
 // Tx expõe a transação bruta (para workers que precisam de queries ad-hoc).
 func (u *UnitOfWork) Tx() pgx.Tx { return u.tx }
+
+// Acessores para casos de uso: satisfazem as interfaces de internal/app/storage.
+// O adaptador de infraestrutura implementa a porta (padrão portas e adaptadores).
+func (u *UnitOfWork) Wallets() storage.WalletRepository { return u.WalletRepository }
+func (u *UnitOfWork) Wagers() storage.WagerRepository   { return u.WagerRepository }
+func (u *UnitOfWork) Ledger() storage.LedgerRepository  { return u.LedgerRepository }
+func (u *UnitOfWork) Outbox() storage.OutboxRepository  { return u.OutboxRepository }
 
 // UnitOfWorkFactory abre transações e entrega UnitOfWork consistentes.
 type UnitOfWorkFactory struct {

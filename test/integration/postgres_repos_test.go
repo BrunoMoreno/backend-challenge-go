@@ -390,15 +390,22 @@ func TestOutboxClaimAndPublish(t *testing.T) {
 	}
 
 	uow = beginOK(t, f)
-	claimed, err := uow.OutboxRepository.ClaimPending(ctx, 10, time.Minute)
+	claimed, err := uow.OutboxRepository.ClaimPending(ctx, 100, time.Minute)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if len(claimed) != 1 || claimed[0].EventID != unique("evt-1") {
-		t.Fatalf("claim inesperado: %+v", claimed)
+	found := false
+	for _, row := range claimed {
+		if row.EventID == unique("evt-1") {
+			found = true
+		}
+		// Publica todos os pendentes para não vazar entre testes.
+		if err := uow.OutboxRepository.MarkPublished(ctx, row.EventID); err != nil {
+			t.Fatalf("mark published %s: %v", row.EventID, err)
+		}
 	}
-	if err := uow.OutboxRepository.MarkPublished(ctx, unique("evt-1")); err != nil {
-		t.Fatalf("mark published: %v", err)
+	if !found {
+		t.Fatalf("evt-1 não foi reclamado: %+v", claimed)
 	}
 	if err := uow.Commit(ctx); err != nil {
 		t.Fatal(err)

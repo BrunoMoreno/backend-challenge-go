@@ -55,7 +55,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 - [x] 2.5 `TEST` integração: constraints, imutabilidade, `OPENING` único, negatividade, migrations up/down
 
 ### M3 — Casos de uso (G2, G7, RF-01, RF-03..05)
-- [ ] 3.1 `ADD` `OpenWallet`
+- [x] 3.1 `ADD` `OpenWallet`
 - [ ] 3.2 `ADD` `ProcessWagerTransaction` síncrono (`BET/WIN/LOSS`) com idempotência e rejeição persistida
 - [ ] 3.3 `ADD` `REFUND`/`ROLLBACK` com resolução de referência (`ARCHITECTURE` §6)
 - [ ] 3.4 `ADD` `PENDING_REFERENCE` (persistência + evento)
@@ -118,10 +118,11 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 - **Roles de banco:** `app` (migração, dona do schema) vs `wager_app` (aplicação, sem escrita no ledger e sem DDL), criados na migration `000006` (`wager_app` por padrão no Compose/.env).
 - **Interpretações `ARCHITECTURE.md` §14: todas as 7 confirmadas** — sem normalização monetária; 1 reversão por alvo; `WIN` com referência segue reversões; provedor opera qualquer carteira (consulta a transações isolada); identidade SQS depende do broker; carteira inexistente = `404`; `LOSS` `0.00` sem ledger/versão.
 - **Integridade no banco (migration `000008`):** ledger append-only (trigger `BEFORE UPDATE/DELETE`, vale até para o role de migração; `wager_app` não tem privilégio), terminais `PROCESSED`/`REJECTED`/`FAILED` imutáveis (campos de retry continuam mutáveis) e `constraint trigger` deferida no COMMIT valida `balance_minor` = último `balance_after` e `version` = nº de lançamentos + 1. `RAISE` (SQLSTATE `P0001`) é mapeado para `postgres.ErrCheck`; limpeza de teste usa `TRUNCATE` (não dispara triggers).
+- **Camada de aplicação (M3):** casos de uso em `internal/app/<caso>` (portas e adaptadores). Portas em `internal/app/storage` (repositórios + `UnitOfWork` + `Database`); adaptador pgx em `postgres.Database` (satisaz `storage.Database`). Ids de wallet/transação/ledger/evento gerados na aplicação (UUID v4 hex, sem dependência externa). Abertura (RF-01): saldo `>0` persiste no mesmo commit carteira (versão 2), `OPENING` `PROCESSED`, crédito no ledger e outbox de `WagerTransactionProcessed` + `WalletBalanceChanged`; saldo `0.00` grava só a carteira (versão 1); `(playerId, currency)` duplicado → conflito.
 
 ## 6. Status atual
 
-- Fase: **M2 concluída** — persistência completa e verificada no PostgreSQL real (`-race`): UnitOfWork/repositórios pgx, constraints de integridade, migrations up/down validadas do zero
-- Última tarefa concluída: 2.5
-- Próxima tarefa: 3.1 (`OpenWallet`)
+- Fase: **M3 em andamento** — casos de uso; `OpenWallet` (RF-01) implementado e verificado
+- Última tarefa concluída: 3.1
+- Próxima tarefa: 3.2 (`ProcessWagerTransaction` síncrono com idempotência e rejeição persistida)
 - Bloqueios: —
