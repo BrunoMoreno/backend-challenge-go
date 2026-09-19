@@ -48,7 +48,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 - [x] 1.9 `TEST` invariantes, estados, hash (ordem de chaves/equivalência), abertura interna
 
 ### M2 — Persistência (G3, G5, G8)
-- [ ] 2.1 `ADD` migrations: wallets, wager_transactions, ledger (+triggers/REVOKE), inbox, outbox
+- [x] 2.1 `ADD` migrations: wallets, wager_transactions, ledger (+triggers/REVOKE), inbox, outbox
 - [ ] 2.2 `ADD` roles de migração vs. aplicação; documentar up/down
 - [ ] 2.3 `ADD` `UnitOfWork` + repositórios pgx
 - [ ] 2.4 `ADD` constraint trigger deferida saldo × ledger; trigger de terminais imutáveis
@@ -119,7 +119,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 
 ## 6. Status atual
 
-- Fase: **M1 concluída** — domínio puro (`Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction`, eventos, hash, regras) coberto por testes
-- Última tarefa concluída: 1.9
-- Próxima tarefa: 2.1 (`migrations`)
+- Fase: **M2 em andamento** — migrations criadas (wallets, wager_transactions, ledger, inbox, outbox) e validadas up/down
+- Última tarefa concluída: 2.1
+- Próxima tarefa: 2.2 (`roles` de migração vs. aplicação)
 - Bloqueios: —

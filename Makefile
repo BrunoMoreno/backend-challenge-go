@@ -49,14 +49,14 @@ tidy:
 
 ## Migrations
 migrate-up:
-	docker run --rm -v "$(CURDIR)/migrations:/migrations" $(MIGRATE_IMAGE) \
+	docker run --rm --network host -v "$(CURDIR)/migrations:/migrations" $(MIGRATE_IMAGE) \
 		-path=/migrations -database="$(DATABASE_URL)" up
 
 migrate-down:
-	docker run --rm -v "$(CURDIR)/migrations:/migrations" $(MIGRATE_IMAGE) \
+	docker run --rm --network host -v "$(CURDIR)/migrations:/migrations" $(MIGRATE_IMAGE) \
 		-path=/migrations -database="$(DATABASE_URL)" down 1
 
 migrate-create:
 	@test -n "$(name)" || (echo "Uso: make migrate-create name=<descricao>"; exit 1)
-	docker run --rm -v "$(CURDIR)/migrations:/migrations" $(MIGRATE_IMAGE) \
+	docker run --rm --network host -v "$(CURDIR)/migrations:/migrations" $(MIGRATE_IMAGE) \
 		create -ext sql -dir /migrations -seq "$(name)"
