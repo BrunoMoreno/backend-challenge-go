@@ -33,6 +33,10 @@ make up          # sobe postgres, keycloak e localstack
 make migrate-up  # aplica migrations
 ```
 
+> **Roles do PostgreSQL:** migrations rodam como `app` (dona do schema, via
+> `DATABASE_URL` no Makefile); a aplicação conecta como `wager_app`, role sem
+> escrita no ledger (append-only) e sem DDL. Ver `migrations/000006_create_roles.up.sql`.
+
 ## Testes
 
 ```sh
@@ -53,7 +57,7 @@ make migrate-down  # reverte a última migration
 
 ## Status de implementação
 
-M0 (fundação) em andamento — veja `docs/CONTEXT.md` para a fase atual e próximas tarefas.
+M2 (persistência) em andamento — veja `docs/CONTEXT.md` para a fase atual e próximas tarefas.
 
 <!-- Preencher no M10: env completo, filas, migrations detalhadas, exemplos de curl autenticados,
      procedimentos de integração/e2e e validação em clone limpo. -->

@@ -49,7 +49,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 
 ### M2 — Persistência (G3, G5, G8)
 - [x] 2.1 `ADD` migrations: wallets, wager_transactions, ledger (+triggers/REVOKE), inbox, outbox
-- [ ] 2.2 `ADD` roles de migração vs. aplicação; documentar up/down
+- [x] 2.2 `ADD` roles de migração vs. aplicação; documentar up/down
 - [ ] 2.3 `ADD` `UnitOfWork` + repositórios pgx
 - [ ] 2.4 `ADD` constraint trigger deferida saldo × ledger; trigger de terminais imutáveis
 - [ ] 2.5 `TEST` integração: constraints, imutabilidade, `OPENING` único, negatividade, migrations up/down
@@ -115,11 +115,12 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 - **Migrations:** `golang-migrate`.
 - **Emulador SQS:** LocalStack (compatível com SDK v2).
 - **SDK SQS:** `aws-sdk-go-v2`.
+- **Roles de banco:** `app` (migração, dona do schema) vs `wager_app` (aplicação, sem escrita no ledger e sem DDL), criados na migration `000006` (`wager_app` por padrão no Compose/.env).
 - **Interpretações `ARCHITECTURE.md` §14: todas as 7 confirmadas** — sem normalização monetária; 1 reversão por alvo; `WIN` com referência segue reversões; provedor opera qualquer carteira (consulta a transações isolada); identidade SQS depende do broker; carteira inexistente = `404`; `LOSS` `0.00` sem ledger/versão.
 
 ## 6. Status atual
 
-- Fase: **M2 em andamento** — migrations criadas (wallets, wager_transactions, ledger, inbox, outbox) e validadas up/down
-- Última tarefa concluída: 2.1
-- Próxima tarefa: 2.2 (`roles` de migração vs. aplicação)
+- Fase: **M2 em andamento** — schema migrado e roles separados (migração × aplicação) validados no banco
+- Última tarefa concluída: 2.2
+- Próxima tarefa: 2.3 (`UnitOfWork` + repositórios pgx)
 - Bloqueios: —

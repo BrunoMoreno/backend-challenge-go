@@ -1,0 +1,3 @@
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM wager_app;
+REVOKE USAGE ON SCHEMA public FROM wager_app;
+DROP ROLE wager_app;
