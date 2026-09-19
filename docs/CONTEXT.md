@@ -37,15 +37,15 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 - [x] 0.5 `ADD` `cmd/app` mínimo com Fx (config + logger + `/health/live`)
 
 ### M1 — Domínio puro (G1, G5, RF-04)
-- [ ] 1.1 `ADD` `Money` (parse, zero, Add/Sub/Neg, Compare, JSON) com overflow
-- [ ] 1.2 `TEST` `Money` (escala, limites, inválidos, moedas incompatíveis)
-- [ ] 1.3 `ADD` `Wallet` (New/Rehydrate, Credit/Debit, versão, invariantes)
-- [ ] 1.4 `ADD` `WalletLedgerEntry` imutável com validação `after = before ± money`
-- [ ] 1.5 `ADD` `WagerTransaction` (externa/`OPENING`, Rehydrate, transições, failure codes)
-- [ ] 1.6 `ADD` regras por tipo + política de zero + política de reversão
-- [ ] 1.7 `ADD` eventos tipados + envelope
-- [ ] 1.8 `ADD` hash canônico do payload (compartilhado HTTP/SQS)
-- [ ] 1.9 `TEST` invariantes, estados, hash (ordem de chaves/equivalência), abertura interna
+- [x] 1.1 `ADD` `Money` (parse, zero, Add/Sub/Neg, Compare, JSON) com overflow
+- [x] 1.2 `TEST` `Money` (escala, limites, inválidos, moedas incompatíveis)
+- [x] 1.3 `ADD` `Wallet` (New/Rehydrate, Credit/Debit, versão, invariantes)
+- [x] 1.4 `ADD` `WalletLedgerEntry` imutável com validação `after = before ± money`
+- [x] 1.5 `ADD` `WagerTransaction` (externa/`OPENING`, Rehydrate, transições, failure codes)
+- [x] 1.6 `ADD` regras por tipo + política de zero + política de reversão
+- [x] 1.7 `ADD` eventos tipados + envelope
+- [x] 1.8 `ADD` hash canônico do payload (compartilhado HTTP/SQS)
+- [x] 1.9 `TEST` invariantes, estados, hash (ordem de chaves/equivalência), abertura interna
 
 ### M2 — Persistência (G3, G5, G8)
 - [ ] 2.1 `ADD` migrations: wallets, wager_transactions, ledger (+triggers/REVOKE), inbox, outbox
@@ -119,7 +119,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 
 ## 6. Status atual
 
-- Fase: **M0 concluída** — fundação (módulo, Compose, Makefile, README, `cmd/app` Fx) verde
-- Última tarefa concluída: 0.5
-- Próxima tarefa: 1.1 (`Money`)
+- Fase: **M1 concluída** — domínio puro (`Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction`, eventos, hash, regras) coberto por testes
+- Última tarefa concluída: 1.9
+- Próxima tarefa: 2.1 (`migrations`)
 - Bloqueios: —
