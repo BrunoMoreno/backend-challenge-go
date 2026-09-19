@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -643,5 +644,142 @@ func TestProcessReversalOfRejectedTargetRejected(t *testing.T) {
 	}
 	if b, _ := walletBalance(t, "wal-notok"); b != 500 {
 		t.Fatalf("wallet = %d, want 500", b)
+	}
+}
+
+// TestProcessConcurrentBetsOneLosesRace (M3.6, RF-04/G2): 100.00 com duas BETs
+// de 80.00 em paralelo → exatamente 1 PROCESSED e 1 REJECTED
+// INSUFFICIENT_FUNDS; saldo final 20.00, um único débito no ledger e o
+// WalletBalanceChanged saindo só da transação vencedora.
+func TestProcessConcurrentBetsOneLosesRace(t *testing.T) {
+	ctx := context.Background()
+	f := newTestUoW(t)
+	seedWallet(t, f, "wal-race", "player-race", "100.00", 10000)
+	s := newProcessWagerService(t)
+
+	inputs := []processwager.Input{
+		pwInput(t, "p-race", "ext-race-a", "player-race", "wal-race", "race-a", wager.KindBet, "80.00"),
+		pwInput(t, "p-race", "ext-race-b", "player-race", "wal-race", "race-b", wager.KindBet, "80.00"),
+	}
+
+	var mu sync.Mutex
+	var results []processwager.Result
+	var wg sync.WaitGroup
+	for _, in := range inputs {
+		wg.Add(1)
+		go func(in processwager.Input) {
+			defer wg.Done()
+			res, err := s.Process(ctx, in)
+			if err != nil {
+				t.Errorf("process: %v", err)
+				return
+			}
+			mu.Lock()
+			results = append(results, res)
+			mu.Unlock()
+		}(in)
+	}
+	wg.Wait()
+
+	if len(results) != 2 {
+		t.Fatalf("resultados = %d, want 2 (sem erros)", len(results))
+	}
+	var processedID, rejectedID string
+	var processed, rejected int
+	for _, res := range results {
+		switch {
+		case res.State == wager.StateProcessed && res.Balance != nil && res.Balance.String() == "20.00":
+			processed++
+			processedID = res.TransactionID
+		case res.State == wager.StateRejected && res.FailureCode == wager.FailureInsufficientFunds:
+			rejected++
+			rejectedID = res.TransactionID
+		default:
+			t.Fatalf("result inesperado: %+v", res)
+		}
+	}
+	if processed != 1 || rejected != 1 {
+		t.Fatalf("processed=%d rejected=%d, want 1/1", processed, rejected)
+	}
+	if b, v := walletBalance(t, "wal-race"); b != 2000 || v != 3 {
+		t.Fatalf("wallet = %d v%d, want 2000/3 (100.00 − 1×80.00)", b, v)
+	}
+	if n := countLedgerForWallet(t, "wal-race"); n != 2 { // open + 1 débito
+		t.Fatalf("ledger = %d, want 2 (um único débito)", n)
+	}
+	if n := countWagersForWallet(t, "wal-race"); n != 3 { // OPENING + 2 BET
+		t.Fatalf("wagers = %d, want 3", n)
+	}
+	if n := countEventsForTx(t, processedID); n != 2 {
+		t.Fatalf("eventos do vencedor = %d, want 2 (Processed + BalanceChanged)", n)
+	}
+	if n := countEventsForTx(t, rejectedID); n != 1 {
+		t.Fatalf("eventos do rejeitado = %d, want 1 (Rejected)", n)
+	}
+}
+
+// TestProcessConcurrentIdenticalSendsSingleDebit (M3.6, G7/RF-04): 50 envios
+// idênticos em paralelo → 1 PROCESSED (primeiro commit) e 49 replays do mesmo
+// TransactionID; um único débito, ledger e eventos originais.
+func TestProcessConcurrentIdenticalSendsSingleDebit(t *testing.T) {
+	ctx := context.Background()
+	f := newTestUoW(t)
+	seedWallet(t, f, "wal-bulk", "player-bulk", "100.00", 10000)
+	s := newProcessWagerService(t)
+
+	in := pwInput(t, "p-bulk", "ext-bulk", "player-bulk", "wal-bulk", "key-bulk", wager.KindBet, "80.00")
+	const sends = 50
+
+	var mu sync.Mutex
+	var results []processwager.Result
+	var wg sync.WaitGroup
+	for i := 0; i < sends; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, err := s.Process(ctx, in)
+			if err != nil {
+				t.Errorf("process: %v", err)
+				return
+			}
+			mu.Lock()
+			results = append(results, res)
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	if len(results) != sends {
+		t.Fatalf("resultados = %d, want %d (sem erros)", len(results), sends)
+	}
+	var txBase string
+	processed := 0
+	for i, res := range results {
+		if res.State != wager.StateProcessed || res.Balance == nil || res.Balance.String() != "20.00" {
+			t.Fatalf("result[%d] = %+v, want PROCESSED 20.00", i, res)
+		}
+		if !res.IdempotentReplay {
+			processed++
+		}
+		if i == 0 {
+			txBase = res.TransactionID
+		} else if res.TransactionID != txBase {
+			t.Fatalf("result[%d] aponta para commit diverso: %s", i, res.TransactionID)
+		}
+	}
+	if processed != 1 {
+		t.Fatalf("commits novos = %d, want 1", processed)
+	}
+	if b, v := walletBalance(t, "wal-bulk"); b != 2000 || v != 3 {
+		t.Fatalf("wallet = %d v%d, want 2000/3", b, v)
+	}
+	if n := countLedgerForWallet(t, "wal-bulk"); n != 2 { // open + 1 débito
+		t.Fatalf("ledger = %d, want 2 (um único débito)", n)
+	}
+	if n := countWagersForWallet(t, "wal-bulk"); n != 2 { // OPENING + 1 BET
+		t.Fatalf("wagers = %d, want 2 (49 reenvios não criam linha)", n)
+	}
+	if n := countEventsForTx(t, txBase); n != 2 {
+		t.Fatalf("eventos do commit original = %d, want 2", n)
 	}
 }
