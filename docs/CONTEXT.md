@@ -30,11 +30,11 @@ Serviço Go (Uber Fx) que processa `BET/WIN/LOSS/REFUND/ROLLBACK` de provedores 
 Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênteses, os requisitos cobertos.
 
 ### M0 — Fundação
-- [ ] 0.1 `ADD` `go mod init`; fixar versão do Go em `go.mod` e Dockerfile multi-stage
-- [ ] 0.2 `ADD` Docker Compose: postgres, keycloak, localstack/ministack, app; healthchecks
-- [ ] 0.3 `ADD` Makefile (`up`, `test`, `test-race`, `test-integration`, `test-e2e`, `vet`, `fmt`, `migrate-up/down`)
-- [ ] 0.4 `ADD` `.env.example`; esqueleto do `README.md`
-- [ ] 0.5 `ADD` `cmd/app` mínimo com Fx (config + logger + `/health/live`)
+- [x] 0.1 `ADD` `go mod init`; fixar versão do Go em `go.mod` e Dockerfile multi-stage
+- [x] 0.2 `ADD` Docker Compose: postgres, keycloak, localstack/ministack, app; healthchecks
+- [x] 0.3 `ADD` Makefile (`up`, `test`, `test-race`, `test-integration`, `test-e2e`, `vet`, `fmt`, `migrate-up/down`)
+- [x] 0.4 `ADD` `.env.example`; esqueleto do `README.md`
+- [x] 0.5 `ADD` `cmd/app` mínimo com Fx (config + logger + `/health/live`)
 
 ### M1 — Domínio puro (G1, G5, RF-04)
 - [ ] 1.1 `ADD` `Money` (parse, zero, Add/Sub/Neg, Compare, JSON) com overflow
@@ -108,14 +108,18 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 - [ ] 10.3 Validar em clone limpo: `docker compose up --build`, `go test ./...`, `-race`, `go vet`, `gofmt -l`
 - [ ] 10.4 (opcional) partidas dobradas, tracing OTel, teste de carga reproduzível
 
-## 5. Decisões em aberto
+## 5. Decisões tomadas
 
-- Versão do Go a fixar (M0.1)
-- Confirmar as interpretações de `ARCHITECTURE.md` §14
+- **Versão do Go:** `go 1.27` (`go.mod` e `golang:1.27-alpine` no Dockerfile).
+- **Roteador HTTP:** `net/http` stdlib (padrão método+eixo do Go 1.22+), sem dependência de roteador.
+- **Migrations:** `golang-migrate`.
+- **Emulador SQS:** LocalStack (compatível com SDK v2).
+- **SDK SQS:** `aws-sdk-go-v2`.
+- **Interpretações `ARCHITECTURE.md` §14: todas as 7 confirmadas** — sem normalização monetária; 1 reversão por alvo; `WIN` com referência segue reversões; provedor opera qualquer carteira (consulta a transações isolada); identidade SQS depende do broker; carteira inexistente = `404`; `LOSS` `0.00` sem ledger/versão.
 
 ## 6. Status atual
 
-- Fase: **planejamento**
-- Última tarefa concluída: —
-- Próxima tarefa: 0.1
+- Fase: **M0 concluída** — fundação (módulo, Compose, Makefile, README, `cmd/app` Fx) verde
+- Última tarefa concluída: 0.5
+- Próxima tarefa: 1.1 (`Money`)
 - Bloqueios: —
