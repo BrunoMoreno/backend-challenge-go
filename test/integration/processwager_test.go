@@ -458,21 +458,105 @@ func TestProcessReversalMatchismatchRejected(t *testing.T) {
 	}
 }
 
-func TestProcessReversalReferenceUnresolvedRollsBack(t *testing.T) {
+func TestProcessReversalReferencePendingPersisted(t *testing.T) {
 	ctx := context.Background()
 	f := newTestUoW(t)
 	seedWallet(t, f, "wal-unr", "player-unr", "100.00", 10000)
 	s := newProcessWagerService(t)
 
-	_, err := s.Process(ctx, pwRefInput(t, "p-unr", "ext-ref", "player-unr", "wal-unr", "unr-ref", wager.KindRefund, "30.00", unique("ext-missing")))
-	if !errors.Is(err, processwager.ErrReferenceUnresolved) {
-		t.Fatalf("err = %v, want ErrReferenceUnresolved", err)
+	res, err := s.Process(ctx, pwRefInput(t, "p-unr", "ext-ref", "player-unr", "wal-unr", "unr-ref", wager.KindRefund, "30.00", unique("ext-missing")))
+	if err != nil {
+		t.Fatalf("referência ausente deve ser PENDING_REFERENCE, não erro: %v", err)
 	}
-	if n := countRows(t, `SELECT count(*) FROM wager_transactions WHERE idempotency_key = $1`, unique("unr-ref")); n != 0 {
-		t.Fatalf("claim deve ser descartado: %d", n)
+	if res.State != wager.StatePendingReference || res.Balance != nil || res.IdempotentReplay {
+		t.Fatalf("result = %+v, want PENDING_REFERENCE inédito", res)
 	}
-	if b, _ := walletBalance(t, "wal-unr"); b != 10000 {
-		t.Fatalf("wallet = %d, want 10000", b)
+	if n := countRows(t, `SELECT count(*) FROM wager_transactions
+		WHERE idempotency_key = $1 AND state = 'PENDING_REFERENCE'`,
+		unique("unr-ref")); n != 1 {
+		t.Fatalf("claim PENDING_REFERENCE deve persistir, veio %d", n)
+	}
+	if n := countEventsForTx(t, res.TransactionID); n != 1 {
+		t.Fatalf("evento de pendência esperado na outbox, veio %d", n)
+	}
+	if b, v := walletBalance(t, "wal-unr"); b != 10000 || v != 2 {
+		t.Fatalf("sem movimento: wallet = %d v%d, want 10000/2", b, v)
+	}
+	if n := countLedgerForWallet(t, "wal-unr"); n != 1 { // só o open
+		t.Fatalf("pendência não pode gerar lançamentos, veio %d", n)
+	}
+}
+
+func TestProcessReversalPendingReplayIdempotent(t *testing.T) {
+	ctx := context.Background()
+	f := newTestUoW(t)
+	seedWallet(t, f, "wal-unr2", "player-unr2", "100.00", 10000)
+	s := newProcessWagerService(t)
+
+	in := pwRefInput(t, "p-unr", "ext-ref2", "player-unr", "wal-unr2", "unr-ref2", wager.KindRefund, "30.00", unique("ext-missing"))
+	first, err := s.Process(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.Process(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.TransactionID != first.TransactionID || second.State != wager.StatePendingReference ||
+		!second.IdempotentReplay {
+		t.Fatalf("replay = %+v, want PENDING_REFERENCE com IdempotentReplay", second)
+	}
+	if countEventsForTx(t, first.TransactionID) != 1 {
+		t.Fatalf("replay não pode duplicar eventos")
+	}
+}
+
+func TestProcessWinReferenceResolvesBet(t *testing.T) {
+	ctx := context.Background()
+	f := newTestUoW(t)
+	seedWallet(t, f, "wal-wref", "player-wref", "100.00", 10000)
+	s := newProcessWagerService(t)
+
+	bet, err := s.Process(ctx, pwInput(t, "p-wref", "ext-bet", "player-wref", "wal-wref", "wref-bet", wager.KindBet, "30.00"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Process(ctx, pwRefInput(t, "p-wref", "ext-win", "player-wref", "wal-wref", "wref-win", wager.KindWin, "30.00", unique("ext-bet")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.State != wager.StateProcessed || res.Balance == nil || res.Balance.String() != "100.00" {
+		t.Fatalf("win = %+v, want PROCESSED 100.00", res)
+	}
+	if ref := resolvedReference(t, res.TransactionID); ref != bet.TransactionID {
+		t.Fatalf("resolved_reference = %q, want %q", ref, bet.TransactionID)
+	}
+	if b, v := walletBalance(t, "wal-wref"); b != 10000 || v != 4 {
+		t.Fatalf("wallet = %d v%d, want 10000/4", b, v)
+	}
+	if n := countLedgerForWallet(t, "wal-wref"); n != 3 { // open + bet + win
+		t.Fatalf("ledger = %d, want 3", n)
+	}
+	if n := countEventsForTx(t, res.TransactionID); n != 2 {
+		t.Fatalf("eventos do win = %d, want 2", n)
+	}
+}
+
+func TestProcessWinReferencePendingPersisted(t *testing.T) {
+	ctx := context.Background()
+	f := newTestUoW(t)
+	seedWallet(t, f, "wal-wref2", "player-wref2", "100.00", 10000)
+	s := newProcessWagerService(t)
+
+	res, err := s.Process(ctx, pwRefInput(t, "p-wref2", "ext-win", "player-wref2", "wal-wref2", "wref-win2", wager.KindWin, "30.00", unique("ext-missing")))
+	if err != nil {
+		t.Fatalf("WIN referenciando ausente deve pendurar: %v", err)
+	}
+	if res.State != wager.StatePendingReference {
+		t.Fatalf("result = %+v, want PENDING_REFERENCE", res)
+	}
+	if b, v := walletBalance(t, "wal-wref2"); b != 10000 || v != 2 {
+		t.Fatalf("sem movimento: wallet = %d v%d, want 10000/2", b, v)
 	}
 }
 
