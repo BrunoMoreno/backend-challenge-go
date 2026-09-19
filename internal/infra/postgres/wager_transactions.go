@@ -212,6 +212,18 @@ func (r *WagerTransactionRepository) GetByReferenceExternal(ctx context.Context,
 	return r.GetByProviderExternal(ctx, providerID, referenceExternalID)
 }
 
+// GetReversalForReference devolve a reversão PROCESSED/REJECTED/… que resolveu
+// o alvo. A indexação usa resolved_reference_id; o índice parcial UNIQUE só
+// restringe PROCESSED, então o caso de negócio ALREADY_REVERSED é detectado
+// aqui antes de movimentar qualquer saldo.
+func (r *WagerTransactionRepository) GetReversalForReference(ctx context.Context, targetID string) (wager.WagerTransaction, error) {
+	return scanWager(r.tx.QueryRow(ctx,
+		`SELECT `+wagerColumns+` FROM wager_transactions
+		  WHERE resolved_reference_id = $1
+		  ORDER BY created_at
+		  LIMIT 1`, targetID))
+}
+
 // FindPendingDue lista transações em PENDING/PENDING_REFERENCE cujo
 // next_attempt_at venceu, travando-as com SKIP LOCKED (worker multi-instância).
 func (r *WagerTransactionRepository) FindPendingDue(ctx context.Context, now time.Time, limit int) ([]wager.WagerTransaction, error) {

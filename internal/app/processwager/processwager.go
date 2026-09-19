@@ -34,6 +34,9 @@ var (
 	// ErrStaleClaim indica que o dono de um claim concorrente desfez a
 	// transação; o Process repete o ciclo com uma transação nova.
 	ErrStaleClaim = errors.New("processwager: claim concorrente desfeito, reprocessar")
+	// ErrReferenceUnresolved indica referência ausente ou ainda não terminal;
+	// em 3.3 nada é persistido — a persistência PENDING_REFERENCE é a 3.4.
+	ErrReferenceUnresolved = errors.New("processwager: referência não resolvida (PENDING_REFERENCE em 3.4)")
 )
 
 // Input é a operação do provedor já validada estruturalmente (o transporte
@@ -113,7 +116,7 @@ func validate(in Input) error {
 		return ErrMissingIdempotencyKey
 	}
 	switch in.Kind {
-	case wager.KindBet, wager.KindWin, wager.KindLoss:
+	case wager.KindBet, wager.KindWin, wager.KindLoss, wager.KindRefund, wager.KindRollback:
 	default:
 		return ErrUnsupportedKind
 	}
@@ -236,6 +239,8 @@ func (s *Service) apply(ctx context.Context, uow storage.UnitOfWork, tx wager.Wa
 	}
 
 	before := wal.Balance()
+	var rejection wager.FailureCode
+	var moveDir ledger.Direction
 	switch in.Kind {
 	case wager.KindLoss:
 		if err := tx.MarkProcessed(before); err != nil {
@@ -249,21 +254,16 @@ func (s *Service) apply(ctx context.Context, uow storage.UnitOfWork, tx wager.Wa
 		if err := tx.MarkProcessed(after); err != nil {
 			return Result{}, err
 		}
-		entry, err := ledger.New(s.newID(), wal.ID(), tx.ID(), ledger.DirectionCredit,
-			tx.Amount(), before, after, time.Now().UTC())
-		if err != nil {
-			return Result{}, err
-		}
-		if err := uow.Ledger().Insert(ctx, entry); err != nil {
+		moveDir = ledger.DirectionCredit
+		if err := uow.Ledger().Insert(ctx, mustLedger(s.newID(), wal.ID(), tx.ID(),
+			moveDir, tx.Amount(), before, after)); err != nil {
 			return Result{}, err
 		}
 	case wager.KindBet:
 		after, err := wal.Debit(tx.Amount())
 		if err != nil {
 			if errors.Is(err, wallet.ErrInsufficientFunds) {
-				if rerr := tx.Reject(wager.FailureInsufficientFunds); rerr != nil {
-					return Result{}, rerr
-				}
+				rejection = wager.FailureInsufficientFunds
 				break
 			}
 			return Result{}, err
@@ -271,16 +271,29 @@ func (s *Service) apply(ctx context.Context, uow storage.UnitOfWork, tx wager.Wa
 		if err := tx.MarkProcessed(after); err != nil {
 			return Result{}, err
 		}
-		entry, err := ledger.New(s.newID(), wal.ID(), tx.ID(), ledger.DirectionDebit,
-			tx.Amount(), before, after, time.Now().UTC())
+		moveDir = ledger.DirectionDebit
+		if err := uow.Ledger().Insert(ctx, mustLedger(s.newID(), wal.ID(), tx.ID(),
+			moveDir, tx.Amount(), before, after)); err != nil {
+			return Result{}, err
+		}
+	case wager.KindRefund, wager.KindRollback:
+		dir, code, err := s.applyReversal(ctx, uow, &tx, &wal, before)
 		if err != nil {
 			return Result{}, err
 		}
-		if err := uow.Ledger().Insert(ctx, entry); err != nil {
-			return Result{}, err
+		if code != "" {
+			rejection = code
+			break
 		}
+		moveDir = dir
 	default:
 		return Result{}, ErrUnsupportedKind
+	}
+
+	if rejection != "" {
+		if err := tx.Reject(rejection); err != nil {
+			return Result{}, err
+		}
 	}
 
 	if tx.State() == wager.StateRejected {
@@ -328,7 +341,7 @@ func (s *Service) apply(ctx context.Context, uow storage.UnitOfWork, tx wager.Wa
 		return Result{}, err
 	}
 
-	if in.Kind != wager.KindLoss {
+	if in.Kind != wager.KindLoss && tx.State() != wager.StateRejected {
 		if err := uow.Wallets().UpdateBalance(ctx, wal); err != nil {
 			return Result{}, err
 		}
@@ -336,7 +349,7 @@ func (s *Service) apply(ctx context.Context, uow storage.UnitOfWork, tx wager.Wa
 			events.WalletBalanceChangedData{
 				WalletID:      wal.ID(),
 				TransactionID: tx.ID(),
-				Direction:     directionOf(in.Kind),
+				Direction:     string(moveDir),
 				Money:         tx.Amount(),
 				BalanceBefore: before,
 				BalanceAfter:  wal.Balance(),
@@ -357,11 +370,82 @@ func (s *Service) apply(ctx context.Context, uow storage.UnitOfWork, tx wager.Wa
 	return Result{TransactionID: tx.ID(), State: wager.StateProcessed, Balance: &b}, nil
 }
 
-func directionOf(k wager.Kind) string {
-	if k == wager.KindBet {
-		return "DEBIT"
+func (s *Service) applyReversal(ctx context.Context, uow storage.UnitOfWork, tx *wager.WagerTransaction,
+	wal *wallet.Wallet, before money.Money) (ledger.Direction, wager.FailureCode, error) {
+	target, err := uow.Wagers().GetByReferenceExternal(ctx, tx.ProviderID(), tx.ReferenceExternalTransactionID())
+	if err != nil {
+		if errors.Is(err, postgres.ErrNotFound) {
+			return "", "", ErrReferenceUnresolved
+		}
+		return "", "", err
 	}
-	return "CREDIT"
+	// Alvo ainda não terminal: permanece pendente (PENDING_REFERENCE em 3.4).
+	if !target.IsTerminal() {
+		return "", "", ErrReferenceUnresolved
+	}
+
+	// Uma única reversão processada por alvo (índice parcial no banco) — a
+	// checagem aqui devolve a rejeição de negócio correta antes de movimentar.
+	if rev, rerr := uow.Wagers().GetReversalForReference(ctx, target.ID()); rerr == nil && rev.State() == wager.StateProcessed {
+		return "", wager.FailureAlreadyReversed, nil
+	} else if rerr != nil && !errors.Is(rerr, postgres.ErrNotFound) {
+		return "", "", rerr
+	}
+
+	mv, rerr := wager.ResolveReversal(*tx, target)
+	if rerr != nil {
+		switch {
+		case errors.Is(rerr, wager.ErrReferenceNotProcessed):
+			return "", wager.FailureReferenceNotProcessed, nil
+		case errors.Is(rerr, wager.ErrReferenceMismatch):
+			return "", wager.FailureReferenceMismatch, nil
+		case errors.Is(rerr, wager.ErrInvalidReferenceKind):
+			return "", wager.FailureInvalidReferenceKind, nil
+		default:
+			return "", "", rerr
+		}
+	}
+
+	after, err := applyMovement(wal, mv)
+	if err != nil {
+		if errors.Is(err, wallet.ErrInsufficientFunds) {
+			return "", wager.FailureReversalInsufficientFunds, nil
+		}
+		return "", "", err
+	}
+	if err := tx.ResolveReference(target.ID()); err != nil {
+		return "", "", err
+	}
+	if err := tx.MarkProcessed(after); err != nil {
+		return "", "", err
+	}
+	if err := uow.Ledger().Insert(ctx, mustLedger(s.newID(), wal.ID(), tx.ID(),
+		mv.Direction, mv.Amount, before, after)); err != nil {
+		return "", "", err
+	}
+	return mv.Direction, "", nil
+}
+
+// applyMovement executa o movimento calculado (débito ou crédito) na carteira.
+func applyMovement(w *wallet.Wallet, mv wager.Movement) (money.Money, error) {
+	switch mv.Direction {
+	case ledger.DirectionCredit:
+		return w.Credit(mv.Amount)
+	case ledger.DirectionDebit:
+		return w.Debit(mv.Amount)
+	default:
+		return money.Money{}, ledger.ErrInvalidDirection
+	}
+}
+
+// mustLedger constrói o lançamento do ledger; erros aqui são invariantes do
+// processo (valores e direções validados antes do commit).
+func mustLedger(id, walletID, txID string, dir ledger.Direction, amount, before, after money.Money) ledger.Entry {
+	e, err := ledger.New(id, walletID, txID, dir, amount, before, after, time.Now().UTC())
+	if err != nil {
+		panic(fmt.Errorf("processwager: lançamento inválido: %w", err))
+	}
+	return e
 }
 
 // newID gera um identificador aleatório de 16 bytes (UUID v4 hex).

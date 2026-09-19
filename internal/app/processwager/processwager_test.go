@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/BrunoMoreno/backend-challenge-go/internal/app/processwager"
@@ -52,6 +54,15 @@ func (s *fakeState) byKey(key string) (wager.WagerTransaction, bool) {
 	return wager.WagerTransaction{}, false
 }
 
+func (s *fakeState) byID(id string) (wager.WagerTransaction, bool) {
+	for _, t := range s.wagers {
+		if t.ID() == id {
+			return t, true
+		}
+	}
+	return wager.WagerTransaction{}, false
+}
+
 func (s *fakeState) byProviderExternal(provider, external string) (wager.WagerTransaction, bool) {
 	for _, t := range s.wagers {
 		if t.ProviderID() == provider && t.ExternalTransactionID() == external {
@@ -71,10 +82,52 @@ func (s *fakeState) countEvent(typ events.Type) int {
 	return n
 }
 
+func (s *fakeState) countEventsForTx(txID string) int {
+	n := 0
+	for _, e := range s.outbox {
+		var d struct {
+			TransactionID string `json:"transactionId"`
+		}
+		if json.Unmarshal(e.Data, &d) == nil && d.TransactionID == txID {
+			n++
+		}
+	}
+	return n
+}
+
+func assertRejected(t *testing.T, db *fakeDB, res processwager.Result, code wager.FailureCode) {
+	t.Helper()
+	if res.State != wager.StateRejected || res.FailureCode != code {
+		t.Fatalf("rejeição: %s / %s, quero %s", res.State, res.FailureCode, code)
+	}
+	r, ok := db.state.byID(res.TransactionID)
+	if !ok || r.State() != wager.StateRejected || r.FailureCode() != code {
+		t.Fatalf("claim não persistiu a rejeição %s", code)
+	}
+}
+
+func assertWallet(t *testing.T, db *fakeDB, walletID, want string, version int) {
+	t.Helper()
+	w, ok := db.state.wallet(walletID)
+	if !ok {
+		t.Fatalf("carteira %s não encontrada", walletID)
+	}
+	if w.Balance().String() != want || w.Version() != int64(version) {
+		t.Fatalf("carteira %s v%d, quero %s v%d", w.Balance(), w.Version(), want, version)
+	}
+}
+
 type fakeDB struct {
 	mu     sync.Mutex
 	state  fakeState
 	beginN int
+	idN    int64
+}
+
+// nextID gera ids únicos por instância do fake (um runner por teste).
+func (d *fakeDB) nextID() string {
+	n := atomic.AddInt64(&d.idN, 1)
+	return "id-" + strconv.FormatInt(n, 10)
 }
 
 func (d *fakeDB) Begin(ctx context.Context) (storage.UnitOfWork, error) {
@@ -192,6 +245,19 @@ func (r *fakeWagerRepo) GetByProviderExternal(ctx context.Context, providerID, e
 	return t, nil
 }
 
+func (r *fakeWagerRepo) GetByReferenceExternal(ctx context.Context, providerID, referenceExternalID string) (wager.WagerTransaction, error) {
+	return r.GetByProviderExternal(ctx, providerID, referenceExternalID)
+}
+
+func (r *fakeWagerRepo) GetReversalForReference(ctx context.Context, targetID string) (wager.WagerTransaction, error) {
+	for _, t := range r.u.live.wagers {
+		if t.ResolvedReferenceTransactionID() == targetID {
+			return t, nil
+		}
+	}
+	return wager.WagerTransaction{}, postgres.ErrNotFound
+}
+
 type fakeLedgerRepo struct{ u *fakeUoW }
 
 func (r *fakeLedgerRepo) Insert(ctx context.Context, e ledger.Entry) error {
@@ -270,17 +336,10 @@ func moneyBRLUnsafe(v string) money.Money {
 	return m
 }
 
-func newIDSeq() func() string {
-	var i int
-	return func() string {
-		i++
-		return "id-" + string(rune('A'+i-1))
-	}
-}
-
+// run executa uma operação no fake; o Service sorteia ids únicos do fakeDB.
 func run(t *testing.T, db *fakeDB, in processwager.Input) (processwager.Result, error) {
 	t.Helper()
-	s := processwager.NewServiceWithIDs(db, newIDSeq())
+	s := processwager.NewServiceWithIDs(db, db.nextID)
 	return s.Process(context.Background(), in)
 }
 
@@ -522,11 +581,13 @@ func TestValidationRejectsBeforeTouchingDB(t *testing.T) {
 		want error
 	}{
 		{"sem chave de idempotência", makeInput(wager.KindBet, "10.00", "", ""), processwager.ErrMissingIdempotencyKey},
-		{"REFUND fora de escopo", makeInput(wager.KindRefund, "10.00", "ext-0", "k"), processwager.ErrUnsupportedKind},
-		{"ROLLBACK fora de escopo", makeInput(wager.KindRollback, "10.00", "ext-0", "k"), processwager.ErrUnsupportedKind},
+		{"OPENING fora de escopo", makeInput(wager.KindOpening, "10.00", "", "k"), processwager.ErrUnsupportedKind},
 		{"WIN com referência", makeInput(wager.KindWin, "10.00", "ext-0", "k"), processwager.ErrWinReferencePending},
 		{"BET com valor zero", makeInput(wager.KindBet, "0.00", "", "k"), processwager.ErrInvalidAmountForKind},
 		{"LOSS com valor não nulo", makeInput(wager.KindLoss, "10.00", "", "k"), processwager.ErrInvalidAmountForKind},
+		{"REFUND sem referência", makeInput(wager.KindRefund, "10.00", "", "k"), wager.ErrMissingReference},
+		{"ROLLBACK sem referência", makeInput(wager.KindRollback, "10.00", "", "k"), wager.ErrMissingReference},
+		{"REFUND com valor zero", makeInput(wager.KindRefund, "0.00", "ext-0", "k"), processwager.ErrInvalidAmountForKind},
 	}
 	db := &fakeDB{}
 	seedWallet(t, db, "100.00")
@@ -539,4 +600,239 @@ func TestValidationRejectsBeforeTouchingDB(t *testing.T) {
 	if len(db.state.wagers) != 0 {
 		t.Fatalf("nenhuma validação pode criar claim: %d", len(db.state.wagers))
 	}
+}
+
+// op monta um input com exteriors próprios por operação, evitando colisões
+// (provider_id, external_transaction_id) e referências ambíguas nos testes.
+func op(kind wager.Kind, amount, ext, ref, key string) processwager.Input {
+	in := makeInput(kind, amount, ref, key)
+	in.ExternalTransactionID = ext
+	return in
+}
+
+func TestRefundOfBetCreditsWallet(t *testing.T) {
+	db := &fakeDB{}
+	seedWallet(t, db, "100.00")
+
+	if _, err := run(t, db, op(wager.KindBet, "30.00", "ext-bet-1", "", "bet-1")); err != nil {
+		t.Fatal(err)
+	}
+	target, _ := db.state.byKey("bet-1")
+	res, err := run(t, db, op(wager.KindRefund, "30.00", "ext-ref-1", "ext-bet-1", "ref-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.State != wager.StateProcessed || res.Balance.String() != "100.00" {
+		t.Fatalf("refund: %s %s", res.State, res.Balance)
+	}
+	w, _ := db.state.wallet(walletID)
+	if want := "100.00"; w.Balance().String() != want || w.Version() != 3 {
+		t.Fatalf("carteira %s v%d", w.Balance(), w.Version())
+	}
+	rf, _ := db.state.byKey("ref-1")
+	if rf.ResolvedReferenceTransactionID() != target.ID() {
+		t.Fatalf("referência resolvida %s, quero %s", rf.ResolvedReferenceTransactionID(), target.ID())
+	}
+	if got := db.state.countEventsForTx(res.TransactionID); got != 2 {
+		t.Fatalf("eventos para a reversão: %d (1 processado+1 balance)", got)
+	}
+	if got := db.state.countEvent(events.TypeWalletBalanceChanged); got != 2 {
+		t.Fatalf("2 mudanças de saldo (bet+refund), veio %d", got)
+	}
+}
+
+func TestRollbackOfWinDebitsWallet(t *testing.T) {
+	db := &fakeDB{}
+	seedWallet(t, db, "100.00")
+	if _, err := run(t, db, op(wager.KindBet, "40.00", "ext-bet-1", "", "bet-1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, db, op(wager.KindWin, "60.00", "ext-win-1", "", "win-1")); err != nil {
+		t.Fatal(err)
+	}
+	target, _ := db.state.byKey("win-1")
+
+	res, err := run(t, db, op(wager.KindRollback, "60.00", "ext-rb-1", "ext-win-1", "rb-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.State != wager.StateProcessed || res.Balance.String() != "60.00" {
+		t.Fatalf("rollback: %s %s", res.State, res.Balance)
+	}
+	w, _ := db.state.wallet(walletID)
+	if w.Balance().String() != "60.00" || w.Version() != 4 {
+		t.Fatalf("carteira %s v%d", w.Balance(), w.Version())
+	}
+	rb, _ := db.state.byKey("rb-1")
+	if rb.ResolvedReferenceTransactionID() != target.ID() {
+		t.Fatalf("referência %s <> %s", rb.ResolvedReferenceTransactionID(), target.ID())
+	}
+	led := db.state.ledger
+	last := led[len(led)-1]
+	if last.Direction() != ledger.DirectionDebit || last.Amount().String() != "60.00" {
+		t.Fatalf("lançamento %s %s", last.Direction(), last.Amount())
+	}
+}
+
+// TestRollbackOfRefundDebitsWallet: REFUND de BET e então ROLLBACK do REFUND.
+func TestRollbackOfRefundDebitsWallet(t *testing.T) {
+	db := &fakeDB{}
+	seedWallet(t, db, "100.00")
+	if _, err := run(t, db, op(wager.KindBet, "40.00", "ext-bet-1", "", "bet-1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, db, op(wager.KindRefund, "40.00", "ext-ref-1", "ext-bet-1", "ref-1")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(t, db, op(wager.KindRollback, "40.00", "ext-rb-1", "ext-ref-1", "rb-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.State != wager.StateProcessed || res.Balance.String() != "60.00" {
+		t.Fatalf("rollback do refund: %s %s", res.State, res.Balance)
+	}
+	rb, _ := db.state.byKey("rb-1")
+	refTx, _ := db.state.byKey("ref-1")
+	if rb.ResolvedReferenceTransactionID() != refTx.ID() {
+		t.Fatalf("rollback deve referenciar o refund")
+	}
+}
+
+func TestRefundOverWinRejectedInvalidReferenceKind(t *testing.T) {
+	db := &fakeDB{}
+	seedWallet(t, db, "100.00")
+	if _, err := run(t, db, op(wager.KindWin, "50.00", "ext-win-1", "", "win-1")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(t, db, op(wager.KindRefund, "50.00", "ext-ref-1", "ext-win-1", "ref-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRejected(t, db, res, wager.FailureInvalidReferenceKind)
+	assertWallet(t, db, walletID, "150.00", 2)
+	if db.state.countEvent(events.TypeWagerTransactionRejected) != 1 {
+		t.Fatalf("rejeição deve gerar evento")
+	}
+}
+
+func TestRefundAmountMismatchRejected(t *testing.T) {
+	db := &fakeDB{}
+	seedWallet(t, db, "100.00")
+	if _, err := run(t, db, op(wager.KindBet, "30.00", "ext-bet-1", "", "bet-1")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(t, db, op(wager.KindRefund, "20.00", "ext-ref-1", "ext-bet-1", "ref-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRejected(t, db, res, wager.FailureReferenceMismatch)
+	assertWallet(t, db, walletID, "70.00", 2)
+}
+
+func TestReversalInsufficientFundsRejected(t *testing.T) {
+	db := &fakeDB{}
+	seedWallet(t, db, "10.00")
+	if _, err := run(t, db, op(wager.KindWin, "90.00", "ext-win-1", "", "win-1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, db, op(wager.KindBet, "98.00", "ext-bet-1", "", "bet-1")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(t, db, op(wager.KindRollback, "90.00", "ext-rb-1", "ext-win-1", "rb-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRejected(t, db, res, wager.FailureReversalInsufficientFunds)
+	assertWallet(t, db, walletID, "2.00", 3)
+}
+
+func TestAlreadyReversedSecondRefundRejected(t *testing.T) {
+	db := &fakeDB{}
+	seedWallet(t, db, "100.00")
+	if _, err := run(t, db, op(wager.KindBet, "30.00", "ext-bet-1", "", "bet-1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, db, op(wager.KindRefund, "30.00", "ext-ref-1", "ext-bet-1", "ref-1")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := run(t, db, op(wager.KindRefund, "30.00", "ext-ref-2", "ext-bet-1", "ref-2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRejected(t, db, res, wager.FailureAlreadyReversed)
+	assertWallet(t, db, walletID, "100.00", 3)
+}
+
+func TestReversalReplaySameKeyIsIdempotent(t *testing.T) {
+	db := &fakeDB{}
+	seedWallet(t, db, "100.00")
+	if _, err := run(t, db, op(wager.KindBet, "30.00", "ext-bet-1", "", "bet-1")); err != nil {
+		t.Fatal(err)
+	}
+	in := op(wager.KindRefund, "30.00", "ext-ref-1", "ext-bet-1", "ref-1")
+	first, err := run(t, db, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := run(t, db, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.TransactionID != first.TransactionID || second.State != wager.StateProcessed ||
+		second.Balance == nil || second.Balance.String() != "100.00" {
+		t.Fatalf("replay: %+v", second)
+	}
+	assertWallet(t, db, walletID, "100.00", 3)
+	if db.state.countEventsForTx(first.TransactionID) != 2 {
+		t.Fatalf("replay não pode duplicar eventos do tx")
+	}
+}
+
+func TestReferenceNotFoundUnresolved(t *testing.T) {
+	db := &fakeDB{}
+	seedWallet(t, db, "100.00")
+	_, err := run(t, db, op(wager.KindRefund, "30.00", "ext-ref-1", "ext-missing", "ref-1"))
+	if !errors.Is(err, processwager.ErrReferenceUnresolved) {
+		t.Fatalf("quero ErrReferenceUnresolved, veio %v", err)
+	}
+	if len(db.state.wagers) != 0 || len(db.state.outbox) != 0 {
+		t.Fatalf("referência ausente não pode persistir claim/eventos")
+	}
+	assertWallet(t, db, walletID, "100.00", 1)
+}
+
+func TestReferenceTargetRejectedRejectedReferenceNotProcessed(t *testing.T) {
+	db := &fakeDB{}
+	seedWallet(t, db, "5.00")
+	res, err := run(t, db, op(wager.KindBet, "10.00", "ext-bet-bad", "", "bet-bad"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRejected(t, db, res, wager.FailureInsufficientFunds)
+
+	ref, err := run(t, db, op(wager.KindRefund, "10.00", "ext-ref-1", "ext-bet-bad", "ref-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRejected(t, db, ref, wager.FailureReferenceNotProcessed)
+	assertWallet(t, db, walletID, "5.00", 1)
+}
+
+func TestReferenceTargetPendingUnresolved(t *testing.T) {
+	db := &fakeDB{}
+	seedWallet(t, db, "100.00")
+
+	pend, err := wager.NewExternal("pend-1", "provider-1", "ext-pend", "seed-pend",
+		"seed-hash", walletID, playerID, "RND-X", "game-1",
+		wager.KindBet, moneyBRLUnsafe("30.00"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.state.wagers = append(db.state.wagers, pend)
+
+	_, err = run(t, db, op(wager.KindRefund, "30.00", "ext-ref-1", "ext-pend", "ref-1"))
+	if !errors.Is(err, processwager.ErrReferenceUnresolved) {
+		t.Fatalf("alvo não-terminal deve ficar sem resolução, veio %v", err)
+	}
+	assertWallet(t, db, walletID, "100.00", 1)
 }
