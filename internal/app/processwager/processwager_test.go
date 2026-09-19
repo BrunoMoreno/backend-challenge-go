@@ -528,6 +528,57 @@ func TestReplaySameKeyReturnsOriginalResultWithoutDoubleDebit(t *testing.T) {
 	}
 }
 
+func TestReplayReturnsOriginalBalanceAfterWalletAdvanced(t *testing.T) {
+	db := &fakeDB{}
+	seedWallet(t, db, "100.00")
+	in := op(wager.KindBet, "30.00", "ext-bet-1", "", "adv-bet")
+	first, err := run(t, db, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(t, db, op(wager.KindWin, "50.00", "ext-win-1", "", "adv-win")); err != nil {
+		t.Fatal(err)
+	}
+	assertWallet(t, db, walletID, "120.00", 3)
+
+	second, err := run(t, db, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.IdempotentReplay || second.TransactionID != first.TransactionID ||
+		second.Balance == nil || second.Balance.String() != "70.00" {
+		t.Fatalf("replay deve devolver o saldo ORIGINAL 70.00, veio %+v", second)
+	}
+	assertWallet(t, db, walletID, "120.00", 3)
+	if len(db.state.wagers) != 2 { // BET + WIN
+		t.Fatalf("replay criou transação nova: %d", len(db.state.wagers))
+	}
+	if n := db.state.countEventsForTx(first.TransactionID); n != 2 {
+		t.Fatalf("replay duplicou eventos: %d", n)
+	}
+}
+
+func TestReplayOfWinReturnsOriginalResult(t *testing.T) {
+	db := &fakeDB{}
+	seedWallet(t, db, "10.00")
+	in := op(wager.KindWin, "50.00", "ext-win-1", "", "win-rep")
+	first, err := run(t, db, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := run(t, db, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.IdempotentReplay || second.TransactionID != first.TransactionID ||
+		second.Balance.String() != "60.00" {
+		t.Fatalf("replay WIN divergente: %+v vs %+v", first, second)
+	}
+	if db.state.countEventsForTx(first.TransactionID) != 2 {
+		t.Fatalf("replay duplicou eventos do WIN")
+	}
+}
+
 func TestIdempotencyKeyReusedWithDifferentPayload(t *testing.T) {
 	db := &fakeDB{}
 	seedWallet(t, db, "100.00")
@@ -537,6 +588,9 @@ func TestIdempotencyKeyReusedWithDifferentPayload(t *testing.T) {
 	_, err := run(t, db, makeInput(wager.KindBet, "40.00", "", "key-same"))
 	if !errors.Is(err, processwager.ErrIdempotencyConflict) {
 		t.Fatalf("quero ErrIdempotencyConflict, veio %v", err)
+	}
+	if len(db.state.wagers) != 1 {
+		t.Fatalf("conflito de hash não pode criar outra linha: %d", len(db.state.wagers))
 	}
 }
 
@@ -551,6 +605,9 @@ func TestExternalTransactionConflict(t *testing.T) {
 	_, err := run(t, db, other)
 	if !errors.Is(err, processwager.ErrExternalConflict) {
 		t.Fatalf("quero ErrExternalConflict, veio %v", err)
+	}
+	if len(db.state.wagers) != 1 {
+		t.Fatalf("conflito (provider, extId) não pode persistir linha: %d", len(db.state.wagers))
 	}
 }
 
