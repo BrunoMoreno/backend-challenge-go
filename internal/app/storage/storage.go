@@ -6,9 +6,11 @@ package storage
 
 import (
 	"context"
+	"time"
 
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/events"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/ledger"
+	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/money"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/wager"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/wallet"
 )
@@ -32,6 +34,7 @@ type WagerRepository interface {
 	UpdatePendingReference(ctx context.Context, t wager.WagerTransaction) error
 	GetByIdempotencyKey(ctx context.Context, key string) (wager.WagerTransaction, error)
 	GetByIdempotencyKeyForUpdate(ctx context.Context, key string) (wager.WagerTransaction, error)
+	GetByID(ctx context.Context, id string) (wager.WagerTransaction, error)
 	GetByProviderExternal(ctx context.Context, providerID, externalID string) (wager.WagerTransaction, error)
 	// GetByReferenceExternal resolve (providerId, referenceExternalTransactionId),
 	// a referência de reversões e de WIN com referência (ARCHITECTURE §6).
@@ -45,6 +48,11 @@ type WagerRepository interface {
 // LedgerRepository agrega o acesso ao ledger dentro de uma transação.
 type LedgerRepository interface {
 	Insert(ctx context.Context, e ledger.Entry) error
+	// ListByWallet lista os lançamentos em ordem (created_at, id) decrescente
+	// com paginação por keyset. A currency da carteira é exigida porque a
+	// tabela armazena apenas minor units.
+	ListByWallet(ctx context.Context, walletID string, currency money.Currency,
+		afterCreatedAt time.Time, afterID string, limit int) ([]ledger.Entry, error)
 }
 
 // OutboxRepository agrega o acesso à outbox dentro de uma transação.

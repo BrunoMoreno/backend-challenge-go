@@ -2,8 +2,10 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/ledger"
+	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/money"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -25,4 +27,61 @@ func (r *LedgerRepository) Insert(ctx context.Context, e ledger.Entry) error {
 		e.Amount().Minor(), e.BalanceBefore().Minor(), e.BalanceAfter().Minor(),
 		e.CreatedAt())
 	return mapError(err)
+}
+
+// ListByWallet lista os lançamentos da carteira em ordem decrescente
+// (created_at, id). Paginação por keyset: afterCreatedAt/afterID marcam o
+// lançamento imediatamente anterior à página solicitada; zero indica o início.
+// A currency da carteira (argent) é necessária porque a tabela guarda apenas
+// minor units e a reconstrução exige money.Money completo.
+func (r *LedgerRepository) ListByWallet(ctx context.Context, walletID string, currency money.Currency,
+	afterCreatedAt time.Time, afterID string, limit int) ([]ledger.Entry, error) {
+
+	rows, err := r.tx.Query(ctx,
+		`SELECT id, wallet_id, transaction_id, direction, amount_minor,
+		        balance_before, balance_after, created_at
+		   FROM wallet_ledger_entries
+		  WHERE wallet_id = $1
+		    AND (
+		      $4 = TIMESTAMPTZ 'epoch'
+		      OR created_at < $4
+		      OR (created_at = $4 AND id < $5)
+		    )
+		  ORDER BY created_at DESC, id DESC
+		  LIMIT $3`,
+		walletID, walletID, limit, afterCreatedAt, afterID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+
+	var entries []ledger.Entry
+	for rows.Next() {
+		var (
+			id            string
+			walletID      string
+			transactionID string
+			direction     ledger.Direction
+			amountMinor   int64
+			beforeMinor   int64
+			afterMinor    int64
+			createdAt     time.Time
+		)
+		if err := rows.Scan(&id, &walletID, &transactionID, &direction,
+			&amountMinor, &beforeMinor, &afterMinor, &createdAt); err != nil {
+			return nil, mapError(err)
+		}
+		entry, err := ledger.New(
+			id, walletID, transactionID, direction,
+			money.MoneyOf(amountMinor, currency),
+			money.MoneyOf(beforeMinor, currency),
+			money.MoneyOf(afterMinor, currency),
+			createdAt,
+		)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
 }

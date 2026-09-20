@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/BrunoMoreno/backend-challenge-go/internal/app/storage"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/events"
@@ -177,6 +179,15 @@ func (r *fakeWagerRepo) GetByProviderExternal(ctx context.Context, providerID, e
 	return wager.WagerTransaction{}, postgres.ErrNotFound
 }
 
+func (r *fakeWagerRepo) GetByID(ctx context.Context, id string) (wager.WagerTransaction, error) {
+	for _, ex := range r.u.live.wagers {
+		if ex.ID() == id {
+			return ex, nil
+		}
+	}
+	return wager.WagerTransaction{}, postgres.ErrNotFound
+}
+
 func (r *fakeWagerRepo) GetByReferenceExternal(ctx context.Context, providerID, referenceExternalID string) (wager.WagerTransaction, error) {
 	return r.GetByProviderExternal(ctx, providerID, referenceExternalID)
 }
@@ -195,6 +206,33 @@ type fakeLedgerRepo struct{ u *fakeUoW }
 func (r *fakeLedgerRepo) Insert(ctx context.Context, e ledger.Entry) error {
 	r.u.live.ledger = append(r.u.live.ledger, e)
 	return nil
+}
+
+func (r *fakeLedgerRepo) ListByWallet(ctx context.Context, walletID string, currency money.Currency,
+	afterCreatedAt time.Time, afterID string, limit int) ([]ledger.Entry, error) {
+	var entries []ledger.Entry
+	for _, e := range r.u.live.ledger {
+		if e.WalletID() != walletID {
+			continue
+		}
+		if !afterCreatedAt.IsZero() {
+			if e.CreatedAt().After(afterCreatedAt) ||
+				(e.CreatedAt().Equal(afterCreatedAt) && e.ID() >= afterID) {
+				continue
+			}
+		}
+		entries = append(entries, e)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].CreatedAt().Equal(entries[j].CreatedAt()) {
+			return entries[i].ID() > entries[j].ID()
+		}
+		return entries[i].CreatedAt().After(entries[j].CreatedAt())
+	})
+	if limit > 0 && len(entries) > limit {
+		entries = entries[:limit]
+	}
+	return entries, nil
 }
 
 type fakeOutboxRepo struct{ u *fakeUoW }
