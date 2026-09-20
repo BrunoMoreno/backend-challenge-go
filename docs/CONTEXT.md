@@ -65,10 +65,10 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 ### M4 — HTTP + Auth (RF-02, RF-08..10)
 - [x] 4.1 `ADD` realm Keycloak importável, clients/identidades de teste, script de token
 - [x] 4.2 `ADD` middleware JWT (JWKS, iss/aud/exp) + matriz de autorização
-- [ ] 4.3 `ADD` handlers de carteira, ledger paginado, envio de operação, consultas de transação
-- [ ] 4.4 `ADD` mapeamento de erros → `docs/API.md` (inclui 503)
+- [x] 4.3 `ADD` handlers de carteira, ledger paginado, envio de operação, consultas de transação
+- [x] 4.4 `ADD` mapeamento de erros → `docs/API.md` (inclui 503)
 - [ ] 4.5 `ADD` reconciliação (snapshot `REPEATABLE READ`)
-- [ ] 4.6 `ADD` health live/ready
+- [x] 4.6 `ADD` health live/ready
 - [ ] 4.7 `TEST` auth real e isolamento entre provedores (consulta e replay), sem efeito colateral em 401/403
 
 ### M5 — Outbox (G4, RF-07)
@@ -123,7 +123,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 
 ## 6. Status atual
 
-- Fase: **M4 em andamento** — HTTP + Auth; realm importável e middleware JWT/matriz de autorização prontos; restam handlers, mapeamento de erros, reconciliação e health ready
-- Última tarefa concluída: 4.2 (`ADD` middleware JWT (JWKS, iss/aud/exp) + matriz de autorização)
-- Próxima tarefa: 4.3 (`ADD` handlers de carteira, ledger paginado, envio de operação, consultas de transação)
+- Fase: **M4 quase completo** — HTTP + Auth entregues; resta reconciliação (4.5) e auth real end-to-end (4.7, com o harness de M9). Próximo marco: **M5 — Outbox**
+- Última tarefa concluída: 4.6 (`ADD` health live/ready; 4.3/4.4 documentados na API.md)
+- Próxima tarefa: 5.1 (`ADD` publisher com lease, `SKIP LOCKED`, backoff)
 - Bloqueios: —

@@ -33,7 +33,7 @@ Corpo: `{"playerId":"…","initialBalance":{"amount":"1000.00","currency":"BRL"}
 ### `GET /wallets/:walletId` → `200` `{"id","playerId","balance","version"}`; `404 WALLET_NOT_FOUND`.
 
 ### `GET /wallets/:walletId/ledger?cursor=&limit=50`
-`limit` 1–200. Resposta: `{"items":[{"id","transactionId","direction","money","balanceBefore","balanceAfter","createdAt"}],"nextCursor":"…|null"}`. Cursor opaco, ordenação estável.
+`limit` 1–200. Resposta: `{"items":[{"id","transactionId","direction","money","balanceBefore","balanceAfter","createdAt"}],"nextCursor":"…|null"}`. Cursor opaco, ordenação estável. `cursor` inválido → `400 INVALID_CURSOR`.
 
 ### `POST /wagering/transactions`
 Headers: `Idempotency-Key` (obrigatório). Corpo: campos do enunciado; reversões (e `WIN` opcionalmente) incluem `referenceExternalTransactionId`.
@@ -52,17 +52,18 @@ Headers: `Idempotency-Key` (obrigatório). Corpo: campos do enunciado; reversõe
 | Sem/inválido/expirado token | 401 | `UNAUTHENTICATED` |
 | Sem permissão / `providerId` ≠ identidade | 403 | `FORBIDDEN` |
 | PostgreSQL indisponível / timeout | 503 + `Retry-After` | `UNAVAILABLE` |
+| Concorrência transitória (stale claim em outro processador) | 503 + `Retry-After: 1` | `UNAVAILABLE` (cliente deve repetir) |
 
 Replay de `PENDING_REFERENCE` devolve 202 com o estado atual; se já mudou para terminal, devolve o resultado terminal correspondente.
 
 ### `GET /wagering/transactions/:id` e `GET /providers/:pid/wagering/transactions/:extId`
-`200` com `{"transactionId","providerId","externalTransactionId","kind","status","failureCode","money","referenceExternalTransactionId","resolvedReferenceTransactionId","attempts","nextAttemptAt","balance","createdAt","updatedAt"}` (campos aplicáveis ao estado). Permite acompanhar pendências e consultar códigos de rejeição/falha.
+`200` com `{"transactionId","providerId","externalTransactionId","kind","status","failureCode","money","referenceExternalTransactionId","resolvedReferenceTransactionId","attempts","nextAttemptAt","balance","createdAt","updatedAt"}` (campos aplicáveis ao estado). Permite acompanhar pendências e consultar códigos de rejeição/falha. `404 TRANSACTION_NOT_FOUND` quando não existe ou, no caso por ID, pertence a outro provedor.
 
 ### `POST /wallets/:walletId/reconciliation`
 `200` `{"walletId","storedBalance","calculatedBalance","difference","consistent","checkedEntries"}`. Lê saldo e ledger em um único snapshot (`REPEATABLE READ`, somente leitura); `difference = stored − calculated`; nunca altera saldo. Divergência gera log de erro e incrementa métrica.
 
 ### Health
-`GET /health/live` → `200` se o processo responde. `GET /health/ready` → `200` se PostgreSQL e SQS respondem, senão `503` com o componente falho.
+`GET /health/live` → `200` se o processo responde. `GET /health/ready` → `200` se PostgreSQL responde (probe do SQS entra com o consumidor, M7); senão `503` com o componente falho (`NOT_READY`).
 
 ## 4. Códigos de rejeição (`failureCode`, persistidos, definitivos)
 
@@ -82,7 +83,7 @@ Replay de `PENDING_REFERENCE` devolve 202 com o estado atual; se já mudou para 
 
 ## 5. Erros de entrada (não persistidos, corrigíveis)
 
-`INVALID_JSON`, `INVALID_FIELD`, `INVALID_MONEY` (formato/escala/negativo/overflow), `INVALID_CURRENCY`, `UNKNOWN_KIND`, `OPENING_NOT_ALLOWED`, `INVALID_AMOUNT_FOR_KIND` (zero em `BET/WIN/REFUND/ROLLBACK`, diferente de `0.00` em `LOSS`), `MISSING_REFERENCE` (`REFUND`/`ROLLBACK` sem referência), `MISSING_IDEMPOTENCY_KEY`.
+`INVALID_JSON`, `INVALID_FIELD`, `INVALID_MONEY` (formato/escala/negativo/overflow), `INVALID_CURRENCY`, `UNKNOWN_KIND`, `OPENING_NOT_ALLOWED`, `INVALID_AMOUNT_FOR_KIND` (zero em `BET/WIN/REFUND/ROLLBACK`, diferente de `0.00` em `LOSS`), `MISSING_REFERENCE` (`REFUND`/`ROLLBACK` sem referência), `MISSING_IDEMPOTENCY_KEY`, `INVALID_CURSOR` (página do ledger).
 
 ## 6. Exemplos (`curl`)
 

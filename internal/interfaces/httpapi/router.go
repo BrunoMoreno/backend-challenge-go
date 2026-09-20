@@ -27,6 +27,9 @@ func buildHandler(logger *slog.Logger, deps Deps) http.Handler {
 	a := &api{deps: deps}
 
 	mux.HandleFunc("GET /health/live", handleLive(logger))
+	if deps.Ready != nil {
+		mux.HandleFunc("GET /health/ready", handleReady(deps))
+	}
 
 	if deps.Verifier != nil {
 		walletInternal := []string{RoleWalletInternal}

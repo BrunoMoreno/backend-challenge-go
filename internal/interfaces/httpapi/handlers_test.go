@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -77,6 +78,32 @@ func (f *fakeQueryService) ProviderTransaction(context.Context, string, string) 
 
 func testHandler(deps Deps) http.Handler {
 	return buildHandler(slog.New(slog.NewTextHandler(io.Discard, nil)), deps)
+}
+
+func TestHealthReady(t *testing.T) {
+	ok := func(context.Context) error { return nil }
+	t.Run("ok", func(t *testing.T) {
+		rec := doReq(testHandler(Deps{Ready: ok}), http.MethodGet, "/health/ready", "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+		}
+	})
+	t.Run("componente indisponível", func(t *testing.T) {
+		h := testHandler(Deps{Ready: func(context.Context) error {
+			return errors.New("postgres indisponível")
+		}})
+		rec := doReq(h, http.MethodGet, "/health/ready", "")
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503 (%s)", rec.Code, rec.Body.String())
+		}
+		assertErrorCode(t, rec, "NOT_READY")
+	})
+	t.Run("sem probe configurado", func(t *testing.T) {
+		rec := doReq(testHandler(Deps{}), http.MethodGet, "/health/ready", "")
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404", rec.Code)
+		}
+	})
 }
 
 func newWallet(t *testing.T, id, player, balance string) wallet.Wallet {

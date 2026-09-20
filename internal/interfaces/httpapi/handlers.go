@@ -34,6 +34,8 @@ type Deps struct {
 	Wagers WagerService
 	// Queries atende as consultas de carteira, extrato e transações.
 	Queries QueryService
+	// Ready é o probe de prontidão (PostgreSQL, e SQS a partir do M7).
+	Ready func(ctx context.Context) error
 }
 
 // WalletService é a porta de abertura de carteiras exigida pelo HTTP.

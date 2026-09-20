@@ -39,6 +39,7 @@ func main() {
 			processwager.NewService,
 			query.NewService,
 			provideVerifier,
+			provideReady,
 			provideHTTPDeps,
 			httpapi.NewServerWithDeps,
 		),
@@ -69,8 +70,14 @@ func provideVerifier(cfg config.Config) (httpapi.Verifier, error) {
 	return httpapi.NewJWKSVerifier(ctx, cfg.KeycloakIssuer, cfg.KeycloakJWKSURL, cfg.KeycloakAudience)
 }
 
-func provideHTTPDeps(v httpapi.Verifier, w *openwallet.Service, pw *processwager.Service, q *query.Service) httpapi.Deps {
-	return httpapi.Deps{Verifier: v, Wallets: w, Wagers: pw, Queries: q}
+// provideReady é o probe de prontidão: ping no PostgreSQL. O probe do SQS
+// entra com o consumidor (M7).
+func provideReady(pool *pgxpool.Pool) func(context.Context) error {
+	return pool.Ping
+}
+
+func provideHTTPDeps(v httpapi.Verifier, w *openwallet.Service, pw *processwager.Service, q *query.Service, ready func(context.Context) error) httpapi.Deps {
+	return httpapi.Deps{Verifier: v, Wallets: w, Wagers: pw, Queries: q, Ready: ready}
 }
 
 func serveHTTP(
