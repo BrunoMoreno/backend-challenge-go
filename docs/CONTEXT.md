@@ -103,9 +103,9 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 - [ ] 9.5 `TEST` PostgreSQL/SQS indisponíveis temporariamente
 
 ### M10 — Documentação e entrega
-- [ ] 10.1 Finalizar `ARCHITECTURE.md` (incl. limitações e trabalho não concluído)
-- [ ] 10.2 `README.md` reproduzível (pré-requisitos, env, filas, migrations up/down, `curl` autenticados, testes)
-- [ ] 10.3 Validar em clone limpo: `docker compose up --build`, `go test ./...`, `-race`, `go vet`, `gofmt -l`
+- [x] 10.1 Finalizar `ARCHITECTURE.md` (incl. limitações e trabalho não concluído)
+- [x] 10.2 `README.md` reproduzível (pré-requisitos, env, filas, migrations up/down, `curl` autenticados, testes)
+- [x] 10.3 Validar em clone limpo: `docker compose up --build`, `go test ./...`, `-race`, `go vet`, `gofmt -l`
 - [ ] 10.4 (opcional) partidas dobradas, tracing OTel, teste de carga reproduzível
 
 ## 5. Decisões tomadas
