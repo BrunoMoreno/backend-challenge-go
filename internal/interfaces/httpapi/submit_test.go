@@ -235,6 +235,7 @@ func TestSubmitBusinessErrors(t *testing.T) {
 		{"conflito externo", processwager.ErrExternalConflict, "EXTERNAL_TRANSACTION_CONFLICT"},
 		{"moeda divergente", processwager.ErrWalletCurrencyMismatch, "INVALID_CURRENCY"},
 		{"conflito transitório", processwager.ErrStaleClaim, "UNAVAILABLE"},
+		{"falha ao gerar id", processwager.ErrGenerateID, "UNAVAILABLE"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -254,7 +255,7 @@ func TestSubmitBusinessErrors(t *testing.T) {
 				if rec.Code != http.StatusBadRequest {
 					t.Fatalf("status = %d, want 400 (%s)", rec.Code, rec.Body.String())
 				}
-			case processwager.ErrStaleClaim:
+			case processwager.ErrStaleClaim, processwager.ErrGenerateID:
 				if rec.Code != http.StatusServiceUnavailable {
 					t.Fatalf("status = %d, want 503 (%s)", rec.Code, rec.Body.String())
 				}

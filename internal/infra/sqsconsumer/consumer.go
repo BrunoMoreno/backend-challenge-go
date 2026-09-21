@@ -411,7 +411,7 @@ func businessReason(err error) string {
 // isRetryable classifica as falhas transitórias: claim concorrente desfeito e
 // condições do Postgres/SQS que resolvem com reentrega (MESSAGING §3).
 func isRetryable(err error) bool {
-	if errors.Is(err, processwager.ErrStaleClaim) {
+	if errors.Is(err, processwager.ErrStaleClaim) || errors.Is(err, processwager.ErrGenerateID) {
 		return true
 	}
 	if errors.Is(err, postgres.ErrSerialization) || errors.Is(err, postgres.ErrDeadlock) {
