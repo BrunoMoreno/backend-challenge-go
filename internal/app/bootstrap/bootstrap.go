@@ -6,7 +6,9 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -311,8 +313,14 @@ func serveHTTP(
 	}
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
+			// Liga o listener ANTES de retornar: "servidor iniciado" e o fim do
+			// OnStart significam armadilhado de verdade (readiness real, RF-11).
+			ln, err := net.Listen("tcp", srv.Addr)
+			if err != nil {
+				return fmt.Errorf("http: escutar %s: %w", srv.Addr, err)
+			}
 			go func() {
-				if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 					logger.Error("http: servidor encerrou com erro", "addr", cfg.HTTPAddr, "error", err)
 				}
 			}()
