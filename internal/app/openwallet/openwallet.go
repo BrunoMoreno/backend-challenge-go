@@ -24,6 +24,8 @@ var (
 	ErrMissingPlayer   = errors.New("openwallet: playerId ausente")
 	ErrMissingCurrency = errors.New("openwallet: moeda ausente")
 	ErrNegativeBalance = errors.New("openwallet: saldo inicial negativo")
+	// ErrGenerateID é falha transitória de entropia ao criar identificadores.
+	ErrGenerateID = errors.New("openwallet: gerar identificador")
 )
 
 // Input é o comando de abertura de carteira.
@@ -35,7 +37,7 @@ type Input struct {
 // Service abre carteiras dentro de uma transação atômica.
 type Service struct {
 	db    storage.Database
-	newID func() string
+	newID func() (string, error)
 }
 
 // NewService cria o caso de uso com o banco de dados da aplicação e gerador de
@@ -46,7 +48,7 @@ func NewService(db storage.Database) *Service {
 
 // NewServiceWithIDs permite injetar o gerador de ids (testes determinísticos).
 func NewServiceWithIDs(db storage.Database, newID func() string) *Service {
-	return &Service{db: db, newID: newID}
+	return &Service{db: db, newID: func() (string, error) { return newID(), nil }}
 }
 
 // Result descreve o que foi persistido.
@@ -70,8 +72,14 @@ func (s *Service) Open(ctx context.Context, in Input) (Result, error) {
 		return Result{}, ErrNegativeBalance
 	}
 
-	correlationID := s.newID()
-	txID := s.newID()
+	correlationID, err := s.nextID()
+	if err != nil {
+		return Result{}, err
+	}
+	txID, err := s.nextID()
+	if err != nil {
+		return Result{}, err
+	}
 
 	uow, err := s.db.Begin(ctx)
 	if err != nil {
@@ -79,8 +87,12 @@ func (s *Service) Open(ctx context.Context, in Input) (Result, error) {
 	}
 	defer func() { _ = uow.Rollback(ctx) }()
 
+	walletID, err := s.nextID()
+	if err != nil {
+		return Result{}, err
+	}
 	// Carteira nasce zerada; o saldo inicial entra como OPENING + crédito.
-	opened, err := wallet.New(s.newID(), in.PlayerID, money.Zero(cur))
+	opened, err := wallet.New(walletID, in.PlayerID, money.Zero(cur))
 	if err != nil {
 		return Result{}, err
 	}
@@ -112,7 +124,11 @@ func (s *Service) Open(ctx context.Context, in Input) (Result, error) {
 	}
 
 	before := money.Zero(cur)
-	openingLedger, err := ledger.New(s.newID(), opened.ID(), txID, ledger.DirectionCredit,
+	ledgerID, err := s.nextID()
+	if err != nil {
+		return Result{}, err
+	}
+	openingLedger, err := ledger.New(ledgerID, opened.ID(), txID, ledger.DirectionCredit,
 		in.InitialBalance, before, in.InitialBalance, time.Now().UTC())
 	if err != nil {
 		return Result{}, err
@@ -121,14 +137,22 @@ func (s *Service) Open(ctx context.Context, in Input) (Result, error) {
 		return Result{}, err
 	}
 
-	processedEnv, err := wagerProcessedEvent(s.newID(), correlationID, opening)
+	processedEventID, err := s.nextID()
+	if err != nil {
+		return Result{}, err
+	}
+	processedEnv, err := wagerProcessedEvent(processedEventID, correlationID, opening)
 	if err != nil {
 		return Result{}, err
 	}
 	if err := uow.Outbox().Insert(ctx, processedEnv); err != nil {
 		return Result{}, err
 	}
-	balanceEnv, err := balanceChangedEvent(s.newID(), correlationID, opened, txID,
+	balanceEventID, err := s.nextID()
+	if err != nil {
+		return Result{}, err
+	}
+	balanceEnv, err := balanceChangedEvent(balanceEventID, correlationID, opened, txID,
 		in.InitialBalance, before)
 	if err != nil {
 		return Result{}, err
@@ -168,14 +192,22 @@ func balanceChangedEvent(eventID, correlationID string, w wallet.Wallet, txID st
 		})
 }
 
-// newID gera um identificador aleatório de 16 bytes (UUID v4 sem hiphen), usado
+func (s *Service) nextID() (string, error) {
+	id, err := s.newID()
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrGenerateID, err)
+	}
+	return id, nil
+}
+
+// newID gera um identificador aleatório de 16 bytes (UUID v4 sem hífen), usado
 // para carteira, OPENING, ledger e eventos dentro do mesmo comando.
-func newID() string {
+func newID() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		panic(fmt.Errorf("openwallet: gerar id: %w", err))
+		return "", err
 	}
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }

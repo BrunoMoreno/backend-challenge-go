@@ -36,6 +36,8 @@ var (
 	// ainda não está disponível (alvo ausente ou não-terminal). O worker de
 	// referências (M6) usa o erro para reagendar a tentativa com backoff.
 	ErrPendingReference = errors.New("processwager: referência ainda não disponível")
+	// ErrGenerateID é falha transitória de entropia ao criar identificadores.
+	ErrGenerateID = errors.New("processwager: gerar identificador")
 )
 
 // Input é a operação do provedor já validada estruturalmente (o transporte
@@ -65,7 +67,7 @@ type Result struct {
 // Service processa operações dentro de transações atômicas.
 type Service struct {
 	db    storage.Database
-	newID func() string
+	newID func() (string, error)
 }
 
 // NewService cria o caso de uso com o banco da aplicação.
@@ -75,7 +77,7 @@ func NewService(db storage.Database) *Service {
 
 // NewServiceWithIDs permite injetar o gerador de ids (testes determinísticos).
 func NewServiceWithIDs(db storage.Database, newID func() string) *Service {
-	return &Service{db: db, newID: newID}
+	return &Service{db: db, newID: func() (string, error) { return newID(), nil }}
 }
 
 // Process executa a operação abrindo a própria transação (canal HTTP). Corridas
@@ -188,7 +190,11 @@ func validate(in Input) error {
 // Retorna ErrStaleClaim quando o claim concorrente com a mesma chave foi
 // desfeito (rollback) e a operação precisa ser reexecutada do zero.
 func (s *Service) processOne(ctx context.Context, uow storage.UnitOfWork, in Input, hash string) (Result, bool, error) {
-	tx, err := wager.NewExternal(s.newID(), in.ProviderID, in.ExternalTransactionID,
+	id, err := s.nextID()
+	if err != nil {
+		return Result{}, false, err
+	}
+	tx, err := wager.NewExternal(id, in.ProviderID, in.ExternalTransactionID,
 		in.IdempotencyKey, hash, in.WalletID, in.PlayerID, in.RoundID, in.GameID,
 		in.Kind, in.Amount, in.ReferenceExternalTransactionID)
 	if err != nil {
@@ -350,8 +356,8 @@ func (s *Service) applyResolved(ctx context.Context, uow storage.UnitOfWork, wal
 			return Result{}, err
 		}
 		moveDir = ledger.DirectionCredit
-		if err := uow.Ledger().Insert(ctx, mustLedger(s.newID(), wal.ID(), tx.ID(),
-			moveDir, tx.Amount(), before, after)); err != nil {
+		if err := s.insertLedger(ctx, uow, wal.ID(), tx.ID(),
+			moveDir, tx.Amount(), before, after); err != nil {
 			return Result{}, err
 		}
 	case wager.KindBet:
@@ -367,8 +373,8 @@ func (s *Service) applyResolved(ctx context.Context, uow storage.UnitOfWork, wal
 			return Result{}, err
 		}
 		moveDir = ledger.DirectionDebit
-		if err := uow.Ledger().Insert(ctx, mustLedger(s.newID(), wal.ID(), tx.ID(),
-			moveDir, tx.Amount(), before, after)); err != nil {
+		if err := s.insertLedger(ctx, uow, wal.ID(), tx.ID(),
+			moveDir, tx.Amount(), before, after); err != nil {
 			return Result{}, err
 		}
 	case wager.KindRefund, wager.KindRollback:
@@ -404,8 +410,8 @@ func (s *Service) applyResolved(ctx context.Context, uow storage.UnitOfWork, wal
 			return Result{}, err
 		}
 		moveDir = mv.Direction
-		if err := uow.Ledger().Insert(ctx, mustLedger(s.newID(), wal.ID(), tx.ID(),
-			moveDir, mv.Amount, before, after)); err != nil {
+		if err := s.insertLedger(ctx, uow, wal.ID(), tx.ID(),
+			moveDir, mv.Amount, before, after); err != nil {
 			return Result{}, err
 		}
 	default:
@@ -419,7 +425,11 @@ func (s *Service) applyResolved(ctx context.Context, uow storage.UnitOfWork, wal
 	if err := uow.Wagers().UpdateTerminal(ctx, tx); err != nil {
 		return Result{}, err
 	}
-	env, err := events.NewWagerTransactionProcessed(s.newID(), tx.ID(), "",
+	eventID, err := s.nextID()
+	if err != nil {
+		return Result{}, err
+	}
+	env, err := events.NewWagerTransactionProcessed(eventID, tx.ID(), "",
 		events.WagerTransactionProcessedData{
 			TransactionID:         tx.ID(),
 			Origin:                tx.Origin(),
@@ -440,7 +450,11 @@ func (s *Service) applyResolved(ctx context.Context, uow storage.UnitOfWork, wal
 		if err := uow.Wallets().UpdateBalance(ctx, wal); err != nil {
 			return Result{}, err
 		}
-		balEnv, err := events.NewWalletBalanceChanged(s.newID(), tx.ID(), "",
+		balEventID, err := s.nextID()
+		if err != nil {
+			return Result{}, err
+		}
+		balEnv, err := events.NewWalletBalanceChanged(balEventID, tx.ID(), "",
 			events.WalletBalanceChangedData{
 				WalletID:      wal.ID(),
 				TransactionID: tx.ID(),
@@ -565,7 +579,11 @@ func (s *Service) pendReference(ctx context.Context, uow storage.UnitOfWork, tx 
 	if err := uow.Wagers().UpdatePendingReference(ctx, *tx); err != nil {
 		return Result{}, err
 	}
-	env, err := events.NewWagerTransactionPendingReference(s.newID(), tx.ID(), "",
+	eventID, err := s.nextID()
+	if err != nil {
+		return Result{}, err
+	}
+	env, err := events.NewWagerTransactionPendingReference(eventID, tx.ID(), "",
 		events.WagerTransactionPendingReferenceData{
 			TransactionID:                  tx.ID(),
 			ProviderID:                     tx.ProviderID(),
@@ -590,7 +608,11 @@ func (s *Service) reject(ctx context.Context, uow storage.UnitOfWork, tx *wager.
 	if err := uow.Wagers().UpdateTerminal(ctx, *tx); err != nil {
 		return Result{}, err
 	}
-	env, err := events.NewWagerTransactionRejected(s.newID(), tx.ID(), "",
+	eventID, err := s.nextID()
+	if err != nil {
+		return Result{}, err
+	}
+	env, err := events.NewWagerTransactionRejected(eventID, tx.ID(), "",
 		events.WagerTransactionRejectedData{
 			TransactionID:         tx.ID(),
 			ProviderID:            tx.ProviderID(),
@@ -619,23 +641,34 @@ func applyMovement(w *wallet.Wallet, mv wager.Movement) (money.Money, error) {
 	}
 }
 
-// mustLedger constrói o lançamento do ledger; erros aqui são invariantes do
-// processo (valores e direções validados antes do commit).
-func mustLedger(id, walletID, txID string, dir ledger.Direction, amount, before, after money.Money) ledger.Entry {
+func (s *Service) insertLedger(ctx context.Context, uow storage.UnitOfWork, walletID, txID string,
+	dir ledger.Direction, amount, before, after money.Money) error {
+	id, err := s.nextID()
+	if err != nil {
+		return err
+	}
 	e, err := ledger.New(id, walletID, txID, dir, amount, before, after, time.Now().UTC())
 	if err != nil {
-		panic(fmt.Errorf("processwager: lançamento inválido: %w", err))
+		return fmt.Errorf("processwager: lançamento inválido: %w", err)
 	}
-	return e
+	return uow.Ledger().Insert(ctx, e)
+}
+
+func (s *Service) nextID() (string, error) {
+	id, err := s.newID()
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrGenerateID, err)
+	}
+	return id, nil
 }
 
 // newID gera um identificador aleatório de 16 bytes (UUID v4 hex).
-func newID() string {
+func newID() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		panic(fmt.Errorf("processwager: gerar id: %w", err))
+		return "", err
 	}
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }

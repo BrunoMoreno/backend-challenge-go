@@ -400,3 +400,16 @@ func TestOpenValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenReturnsGenerateID(t *testing.T) {
+	s := &Service{
+		db: &fakeDB{},
+		newID: func() (string, error) {
+			return "", errors.New("entropy")
+		},
+	}
+	_, err := s.Open(context.Background(), Input{PlayerID: "p1", InitialBalance: moneyBRL(t, "1.00")})
+	if !errors.Is(err, ErrGenerateID) {
+		t.Fatalf("err = %v, want ErrGenerateID", err)
+	}
+}

@@ -29,6 +29,8 @@ func (a *api) failOpenWallet(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "INVALID_FIELD", err.Error())
 	case errors.Is(err, openwallet.ErrNegativeBalance):
 		writeError(w, http.StatusBadRequest, "INVALID_MONEY", err.Error())
+	case errors.Is(err, openwallet.ErrGenerateID):
+		writeUnavailable(w, "falha transitória ao gerar identificador; repita a requisição")
 	default:
 		a.failInternal(w, err)
 	}
@@ -56,12 +58,17 @@ func (a *api) failSubmit(w http.ResponseWriter, err error) {
 			"mesmo (provider, externalTransactionId) com outra chave")
 	case errors.Is(err, processwager.ErrStaleClaim):
 		// Concorrência transitória entre processadores: o cliente deve repetir.
-		w.Header().Set("Retry-After", "1")
-		writeError(w, http.StatusServiceUnavailable, "UNAVAILABLE",
-			"outro processador está tratando a operação; repita a requisição")
+		writeUnavailable(w, "outro processador está tratando a operação; repita a requisição")
+	case errors.Is(err, processwager.ErrGenerateID):
+		writeUnavailable(w, "falha transitória ao gerar identificador; repita a requisição")
 	default:
 		a.failInternal(w, err)
 	}
+}
+
+func writeUnavailable(w http.ResponseWriter, message string) {
+	w.Header().Set("Retry-After", "1")
+	writeError(w, http.StatusServiceUnavailable, "UNAVAILABLE", message)
 }
 
 // failQuery mapeia os erros das consultas.
