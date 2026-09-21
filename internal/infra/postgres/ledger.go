@@ -44,13 +44,13 @@ func (r *LedgerRepository) ListByWallet(ctx context.Context, walletID string, cu
 		   FROM wallet_ledger_entries
 		  WHERE wallet_id = $1
 		    AND (
-		      $4 = TIMESTAMPTZ 'epoch'
-		      OR created_at < $4
-		      OR (created_at = $4 AND id < $5)
+		      $2 = TIMESTAMPTZ '0001-01-01 00:00:00+00'
+		      OR created_at < $2
+		      OR (created_at = $2 AND id < $3)
 		    )
 		  ORDER BY created_at DESC, id DESC
-		  LIMIT $3`,
-		walletID, walletID, limit, afterCreatedAt, afterID)
+		  LIMIT $4`,
+		walletID, afterCreatedAt, afterID, limit)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -62,18 +62,18 @@ func (r *LedgerRepository) ListByWallet(ctx context.Context, walletID string, cu
 			id            string
 			walletID      string
 			transactionID string
-			direction     ledger.Direction
+			directionStr  string
 			amountMinor   int64
 			beforeMinor   int64
 			afterMinor    int64
 			createdAt     time.Time
 		)
-		if err := rows.Scan(&id, &walletID, &transactionID, &direction,
+		if err := rows.Scan(&id, &walletID, &transactionID, &directionStr,
 			&amountMinor, &beforeMinor, &afterMinor, &createdAt); err != nil {
 			return nil, mapError(err)
 		}
 		entry, err := ledger.New(
-			id, walletID, transactionID, direction,
+			id, walletID, transactionID, ledger.Direction(directionStr),
 			money.MoneyOf(amountMinor, currency),
 			money.MoneyOf(beforeMinor, currency),
 			money.MoneyOf(afterMinor, currency),
