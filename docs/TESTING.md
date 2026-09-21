@@ -22,6 +22,10 @@ Nada de mocks substituindo toda a infraestrutura.
   - `FAULT_AFTER_COMMIT_BEFORE_DELETE` (consumidor SQS)
   - `FAULT_AFTER_PUBLISH_BEFORE_MARK` (publisher)
   - `FAULT_AFTER_COMMIT_PENDING` (aceite `PENDING`, se usado)
+- O cenário de crash usa uma **fila FIFO dedicada** (`wager-crash-test.fifo`, recriada no `TestMain`),
+  isolando-o da entrada compartilhada — instâncias em drenagem de cenários anteriores não "roubam" a
+  mensagem do crash. O harness sobrepõe env por instância com **remoção prévia da chave** (a primeira
+  ocorrência vence no runtime, um append simples não sobreporia `APP_SQS_QUEUE_URL`/`FAULT_*`).
 - Duplicidade provada por contadores/métricas de recebimentos repetidos, não só pelo resultado final.
 
 ## 3. Comandos
@@ -51,7 +55,7 @@ Preparação das dependências (containers, imagens, realm) documentada no `READ
 | RF-05 | `REFUND`/`ROLLBACK` antes da referência → resolve depois; expira → `REFERENCE_NOT_FOUND`; reinício no meio | integração + e2e |
 | Reversões | `REFUND`×`ROLLBACK` sobre a mesma `BET`; `ROLLBACK` sem saldo → `REVERSAL_INSUFFICIENT_FUNDS` | integração |
 | RF-06 | reentrega, hash divergente, mensagem inválida, DLQ, HTTP×SQS na mesma operação | integração + e2e |
-| Crash consumidor | `SIGKILL` após commit e antes do delete → reentrega sem duplicar | e2e (`faultinject`) |
+| Crash consumidor | `FAULT_AFTER_COMMIT_BEFORE_DELETE`: commit → `exit(1)` antes do delete; retry do produtor (mesmo envelope/`messageId`) → replay sem duplicar | e2e (`faultinject`, fila dedicada) |
 | G4 / RF-07 | dois publishers disputando; crash commit→publicar e publicar→marcar; `eventId` preservado; lease abandonada assumida | e2e (`faultinject`) |
 | G2 | reinício de todos os processos preserva idempotência, pendências e consistência | e2e |
 | RF-08 | reconciliação consistente; divergência forçada só reportada, saldo intacto | integração |
