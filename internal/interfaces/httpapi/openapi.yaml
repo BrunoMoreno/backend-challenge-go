@@ -1,0 +1,238 @@
+openapi: 3.1.0
+info:
+  title: Wagering API
+  version: 1.0.0
+  description: API para abertura de carteiras e processamento idempotente de operações de aposta.
+servers:
+  - url: /
+tags:
+  - name: Health
+  - name: Wallets
+  - name: Wagering
+paths:
+  /health/live:
+    get:
+      tags: [Health]
+      summary: Verifica se o processo responde
+      responses:
+        '200': { description: Processo ativo, content: { text/plain: { schema: { type: string, example: OK } } } }
+  /health/ready:
+    get:
+      tags: [Health]
+      summary: Verifica PostgreSQL e, quando aplicável, SQS
+      responses:
+        '200': { description: Pronto para tráfego }
+        '503': { $ref: '#/components/responses/NotReady' }
+  /wallets:
+    post:
+      tags: [Wallets]
+      summary: Abre uma carteira
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/OpenWalletRequest' } } }
+      responses:
+        '201': { description: Carteira criada, content: { application/json: { schema: { $ref: '#/components/schemas/Wallet' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /wallets/{walletId}:
+    get:
+      tags: [Wallets]
+      summary: Consulta uma carteira
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/WalletID' }]
+      responses:
+        '200': { description: Carteira, content: { application/json: { schema: { $ref: '#/components/schemas/Wallet' } } } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WalletNotFound' }
+  /wallets/{walletId}/ledger:
+    get:
+      tags: [Wallets]
+      summary: Lista o extrato, paginado por cursor
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/WalletID' }
+        - in: query
+          name: cursor
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200': { description: Página do extrato, content: { application/json: { schema: { $ref: '#/components/schemas/LedgerPage' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WalletNotFound' }
+  /wallets/{walletId}/reconciliation:
+    post:
+      tags: [Wallets]
+      summary: Confere saldo persistido contra o ledger
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/WalletID' }]
+      responses:
+        '200': { description: Resultado da reconciliação, content: { application/json: { schema: { $ref: '#/components/schemas/Reconciliation' } } } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WalletNotFound' }
+  /wagering/transactions:
+    post:
+      tags: [Wagering]
+      summary: Processa uma operação idempotente
+      description: REFUND e ROLLBACK exigem `referenceExternalTransactionId`; WIN pode incluí-lo.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, minLength: 1 }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/WagerRequest' } } }
+      responses:
+        '201': { description: Processada pela primeira vez, content: { application/json: { schema: { $ref: '#/components/schemas/ProcessResult' } } } }
+        '200': { description: Replay idempotente, content: { application/json: { schema: { $ref: '#/components/schemas/ProcessResult' } } } }
+        '202': { description: Aguardando referência, content: { application/json: { schema: { $ref: '#/components/schemas/ProcessResult' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WalletNotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { description: Rejeição de negócio, content: { application/json: { schema: { $ref: '#/components/schemas/ProcessResult' } } } }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /wagering/transactions/{transactionId}:
+    get:
+      tags: [Wagering]
+      summary: Consulta transação por identificador interno
+      security: [{ bearerAuth: [] }]
+      parameters: [{ in: path, name: transactionId, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: Transação, content: { application/json: { schema: { $ref: '#/components/schemas/Transaction' } } } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/TransactionNotFound' }
+  /providers/{providerId}/wagering/transactions/{externalTransactionId}:
+    get:
+      tags: [Wagering]
+      summary: Consulta transação pela identidade externa do provedor
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: providerId, required: true, schema: { type: string } }
+        - { in: path, name: externalTransactionId, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Transação, content: { application/json: { schema: { $ref: '#/components/schemas/Transaction' } } } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/TransactionNotFound' }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    WalletID: { in: path, name: walletId, required: true, schema: { type: string } }
+  responses:
+    BadRequest: { description: Entrada inválida, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Unauthenticated: { description: Token ausente, inválido ou expirado, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Forbidden: { description: Sem permissão, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Conflict: { description: Conflito, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    WalletNotFound: { description: Carteira inexistente, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    TransactionNotFound: { description: Transação inexistente ou inacessível, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    NotReady: { description: Dependência indisponível, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Unavailable: { description: Falha transitória; repita a requisição, headers: { Retry-After: { schema: { type: string } } }, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+  schemas:
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount: { type: string, pattern: '^(0|[1-9][0-9]*)\\.[0-9]{2}$', example: '25.00' }
+        currency: { type: string, pattern: '^[A-Z]{3}$', example: BRL }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: INVALID_FIELD }
+            message: { type: string, example: campo inválido }
+    OpenWalletRequest:
+      type: object
+      required: [playerId, initialBalance]
+      properties:
+        playerId: { type: string }
+        initialBalance: { $ref: '#/components/schemas/Money' }
+    Wallet:
+      type: object
+      required: [id, playerId, balance, version]
+      properties:
+        id: { type: string }
+        playerId: { type: string }
+        balance: { $ref: '#/components/schemas/Money' }
+        version: { type: integer, format: int64 }
+    LedgerEntry:
+      type: object
+      required: [id, transactionId, direction, money, balanceBefore, balanceAfter, createdAt]
+      properties:
+        id: { type: string }
+        transactionId: { type: string }
+        direction: { type: string, enum: [CREDIT, DEBIT] }
+        money: { $ref: '#/components/schemas/Money' }
+        balanceBefore: { $ref: '#/components/schemas/Money' }
+        balanceAfter: { $ref: '#/components/schemas/Money' }
+        createdAt: { type: string, format: date-time }
+    LedgerPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/LedgerEntry' } }
+        nextCursor: { type: [string, 'null'] }
+    WagerRequest:
+      type: object
+      required: [providerId, externalTransactionId, playerId, walletId, roundId, gameId, kind, amount]
+      properties:
+        providerId: { type: string }
+        externalTransactionId: { type: string }
+        playerId: { type: string }
+        walletId: { type: string }
+        roundId: { type: string }
+        gameId: { type: string }
+        kind: { type: string, enum: [BET, WIN, LOSS, REFUND, ROLLBACK] }
+        amount: { $ref: '#/components/schemas/Money' }
+        referenceExternalTransactionId: { type: string }
+    ProcessResult:
+      type: object
+      required: [transactionId, status, idempotentReplay]
+      properties:
+        transactionId: { type: string }
+        status: { type: string, enum: [PROCESSED, REJECTED, PENDING_REFERENCE] }
+        balance: { $ref: '#/components/schemas/Money' }
+        failureCode: { type: string }
+        idempotentReplay: { type: boolean }
+    Transaction:
+      allOf:
+        - $ref: '#/components/schemas/ProcessResult'
+        - type: object
+          required: [providerId, externalTransactionId, kind, money, attempts, createdAt, updatedAt]
+          properties:
+            providerId: { type: string }
+            externalTransactionId: { type: string }
+            kind: { type: string, enum: [BET, WIN, LOSS, REFUND, ROLLBACK] }
+            money: { $ref: '#/components/schemas/Money' }
+            referenceExternalTransactionId: { type: string }
+            resolvedReferenceTransactionId: { type: string }
+            attempts: { type: integer }
+            nextAttemptAt: { type: string, format: date-time }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
+    Reconciliation:
+      type: object
+      required: [walletId, storedBalance, calculatedBalance, difference, consistent, checkedEntries]
+      properties:
+        walletId: { type: string }
+        storedBalance: { $ref: '#/components/schemas/Money' }
+        calculatedBalance: { $ref: '#/components/schemas/Money' }
+        difference: { $ref: '#/components/schemas/Money' }
+        consistent: { type: boolean }
+        checkedEntries: { type: integer, format: int64 }

@@ -4,6 +4,9 @@
 
 ## 1. Convenções
 
+- A especificação legível por máquina é servida em `GET /openapi.yaml`; a UI
+  Swagger pública está em `GET /swagger/`. Ambas documentam as rotas, mas não
+  substituem as regras de autorização deste documento.
 - JSON UTF-8; `Authorization: Bearer <JWT>` em todas as rotas de negócio.
 - Dinheiro: `{"amount":"25.00","currency":"BRL"}` (string decimal, escala 2, ISO 4217).
 - Timestamps UTC RFC 3339; IDs UUIDv7 (exceto IDs externos, que são strings do provedor).

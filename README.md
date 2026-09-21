@@ -48,6 +48,13 @@ make kc-token CLIENT=provider-a   # access token OIDC de um provedor de teste
 
 ## Testes
 
+## Documentação da API
+
+Com o serviço em execução, a especificação OpenAPI está em
+`http://localhost:8080/openapi.yaml` e a interface Swagger UI em
+`http://localhost:8080/swagger/`. A UI carrega seus assets do CDN oficial do
+Swagger; a especificação segue acessível para importação mesmo sem internet.
+
 ```sh
 make test          # go test ./...
 make test-race     # go test -race ./...
