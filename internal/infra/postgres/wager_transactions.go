@@ -224,14 +224,22 @@ func (r *WagerTransactionRepository) GetReversalForReference(ctx context.Context
 		  LIMIT 1`, targetID))
 }
 
-// FindPendingDue lista transações em PENDING/PENDING_REFERENCE cujo
-// next_attempt_at venceu, travando-as com SKIP LOCKED (worker multi-instância).
+// FindPendingDue lista transações da responsabilidade do worker de referências
+// com tentativa vencida (incluindo pendências recém-criadas, cujo
+// next_attempt_at ainda não foi agendado), travando-as com SKIP LOCKED (worker
+// multi-instância M6.1):
+//   - PENDING_REFERENCE — o caso nominal (referência chegou/expirou/retry), e
+//   - PENDING com referência — linhas órfãs do slot de crash do claim (M6.3);
+//
+// operações sem referência (BET/LOSS comuns) nunca ficam sob a alçada do worker:
+// são resolvidas no caminho síncrono/idempotente por quem as enviou.
 func (r *WagerTransactionRepository) FindPendingDue(ctx context.Context, now time.Time, limit int) ([]wager.WagerTransaction, error) {
 	rows, err := r.tx.Query(ctx,
 		`SELECT `+wagerColumns+` FROM wager_transactions
-		  WHERE state IN ('PENDING','PENDING_REFERENCE')
-		    AND next_attempt_at IS NOT NULL AND next_attempt_at <= $1
-		  ORDER BY next_attempt_at
+		  WHERE (state = 'PENDING_REFERENCE'
+		         OR (state = 'PENDING' AND reference_external_id IS NOT NULL))
+		    AND (next_attempt_at IS NULL OR next_attempt_at <= $1)
+		  ORDER BY next_attempt_at NULLS FIRST
 		  LIMIT $2
 		  FOR UPDATE SKIP LOCKED`, now, limit)
 	if err != nil {

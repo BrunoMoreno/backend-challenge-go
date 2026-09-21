@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/BrunoMoreno/backend-challenge-go/internal/app/storage"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/ledger"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/money"
 	"github.com/jackc/pgx/v5"
@@ -84,4 +85,22 @@ func (r *LedgerRepository) ListByWallet(ctx context.Context, walletID string, cu
 		entries = append(entries, entry)
 	}
 	return entries, rows.Err()
+}
+
+// AggregateByWallet devolve a soma de créditos, de débitos e o total de
+// lançamentos da carteira para a reconciliação. Chamado na mesma transação
+// de snapshot do saldo (BeginReadOnly), garante a visão consistente.
+func (r *LedgerRepository) AggregateByWallet(ctx context.Context, walletID string) (storage.LedgerAggregate, error) {
+	var a storage.LedgerAggregate
+	err := r.tx.QueryRow(ctx,
+		`SELECT
+		   COALESCE(SUM(amount_minor) FILTER (WHERE direction = 'CREDIT'), 0)::bigint,
+		   COALESCE(SUM(amount_minor) FILTER (WHERE direction = 'DEBIT'), 0)::bigint,
+		   COUNT(*)
+		 FROM wallet_ledger_entries WHERE wallet_id = $1`, walletID).
+		Scan(&a.CreditsMinor, &a.DebitsMinor, &a.Count)
+	if err != nil {
+		return storage.LedgerAggregate{}, mapError(err)
+	}
+	return a, nil
 }

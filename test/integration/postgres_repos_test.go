@@ -18,6 +18,8 @@ import (
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/wager"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/wallet"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/infra/postgres"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -38,8 +40,19 @@ func migrateURL() string {
 
 // TestMain limpa resíduos de execuções anteriores (role de migração).
 // TRUNCATE não dispara triggers de linha, então consegue limpar o ledger
-// imutável; a aplicação wager_app não tem esse privilégio.
+// imutável; a aplicação wager_app não tem esse privilégio. As filas SQS são
+// purgadas para os testes não verem mensagens de execuções passadas.
 func TestMain(m *testing.M) {
+	testSQSClient().PurgeQueue(context.Background(), &awssqs.PurgeQueueInput{
+		QueueUrl: aws.String(sqsEndpoint + "/000000000000/wager-transactions.fifo"),
+	})
+	testSQSClient().PurgeQueue(context.Background(), &awssqs.PurgeQueueInput{
+		QueueUrl: aws.String(sqsEndpoint + "/000000000000/wager-transactions-dlq.fifo"),
+	})
+	testSQSClient().PurgeQueue(context.Background(), &awssqs.PurgeQueueInput{
+		QueueUrl: aws.String(sqsEndpoint + "/000000000000/wager-events.fifo"),
+	})
+
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, migrateURL())
 	if err == nil {

@@ -43,6 +43,18 @@ type WagerRepository interface {
 	// para detectar reversões já concluídas (ALREADY_REVERSED, índice parcial
 	// UNIQUE (resolved_reference_id) WHERE PROCESSED).
 	GetReversalForReference(ctx context.Context, targetID string) (wager.WagerTransaction, error)
+	// FindPendingDue lista transações em PENDING/PENDING_REFERENCE com
+	// tentativa vencida, travando-as com SKIP LOCKED (worker de referências
+	// M6.1 e varredor M6.3).
+	FindPendingDue(ctx context.Context, now time.Time, limit int) ([]wager.WagerTransaction, error)
+}
+
+// LedgerAggregate resume o ledger de uma carteira para a reconciliação:
+// soma de créditos, soma de débitos e total de lançamentos.
+type LedgerAggregate struct {
+	CreditsMinor int64
+	DebitsMinor  int64
+	Count        int64
 }
 
 // LedgerRepository agrega o acesso ao ledger dentro de uma transação.
@@ -53,6 +65,9 @@ type LedgerRepository interface {
 	// tabela armazena apenas minor units.
 	ListByWallet(ctx context.Context, walletID string, currency money.Currency,
 		afterCreatedAt time.Time, afterID string, limit int) ([]ledger.Entry, error)
+	// AggregateByWallet soma créditos e débitos e conta os lançamentos da
+	// carteira. Deve ser lido no mesmo snapshot do saldo (reconciliação).
+	AggregateByWallet(ctx context.Context, walletID string) (LedgerAggregate, error)
 }
 
 // OutboxRepository agrega o acesso à outbox dentro de uma transação.
@@ -75,4 +90,8 @@ type UnitOfWork interface {
 // Database abre transações para os casos de uso.
 type Database interface {
 	Begin(ctx context.Context) (UnitOfWork, error)
+	// BeginReadOnly abre uma transação somente leitura em snapshot
+	// (REPEATABLE READ), usada pela reconciliação para comparar saldo e ledger
+	// na mesma visão consistente dos dados.
+	BeginReadOnly(ctx context.Context) (UnitOfWork, error)
 }

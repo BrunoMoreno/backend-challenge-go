@@ -56,6 +56,15 @@ make test-e2e
 make vet && make fmt
 ```
 
+> Os testes de integração (e e2e) assumem infraestrutura up
+> (`make up`: PostgreSQL, LocalStack, Keycloak), mas o serviço `app` do
+> compose deve estar **parado** (`docker compose stop app`): os loops de
+> outbox/consumidor/worker de referências do container compartilham o mesmo
+> banco e as mesmas filas SQS, e instâncias externas ativas deixam os testes
+> de lease/claim (ex.: `TestOutboxCrashAfterClaimPublisherRecovers`) e as
+> pendências do `TestReferenceWorker*` não determinísticos.
+> O `TestMain` já purga as filas e zera as tabelas no início da suíte.
+
 ## Comandos úteis
 
 ```sh
@@ -66,7 +75,15 @@ make migrate-down  # reverte a última migration
 
 ## Status de implementação
 
-M4 (HTTP + auth) em andamento — veja `docs/CONTEXT.md` para a fase atual e próximas tarefas.
+**M6 (worker de referências) e M8 (Fx, shutdown e observabilidade) completos** — worker em
+`internal/infra/referenceworker` (papel `APP_ROLES=reference-worker`): resolução tardia de
+`PENDING_REFERENCE` com `FOR UPDATE SKIP LOCKED`, retry com backoff exponencial
+(`APP_REFERENCE_WORKER_*`), TTL/limite de tentativas → `REFERENCE_NOT_FOUND` e varredor de
+`PENDING` órfãos. Grafo Fx final em `internal/app/bootstrap`, papéis por `APP_ROLES`, shutdown
+ordenado (`APP_SHUTDOWN_TIMEOUT`), logs JSON com correlação (`X-Correlation-Id` no HTTP,
+`messageId` no SQS) e métricas Prometheus em `APP_METRICS_ADDR` (default `:9090`, `/metrics`,
+inclui `reference_resolutions_total`). Envelope e contratos das filas em `docs/MESSAGING.md`.
+Próximo marco: **M9 — multi-instância e falhas**. Detalhes em `docs/CONTEXT.md`.
 
 <!-- Preencher no M10: env completo, filas, migrations detalhadas, exemplos de curl autenticados,
      procedimentos de integração/e2e e validação em clone limpo. -->

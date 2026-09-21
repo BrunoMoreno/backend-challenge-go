@@ -47,3 +47,18 @@ func TestRolesHTTPFalse(t *testing.T) {
 		t.Error("RolesHTTP() = true, want false sem papel http")
 	}
 }
+
+func TestRolesReferenceWorker(t *testing.T) {
+	t.Setenv("APP_ROLES", "reference-worker")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.RolesReferenceWorker() {
+		t.Error("RolesReferenceWorker() = false, want true")
+	}
+	if cfg.ReferenceWorkerMaxAttempts != 30 || cfg.ReferenceWorkerTTL != 24*3600*1e9 {
+		t.Errorf("defaults do worker = %d/%v, want 30/24h",
+			cfg.ReferenceWorkerMaxAttempts, cfg.ReferenceWorkerTTL)
+	}
+}

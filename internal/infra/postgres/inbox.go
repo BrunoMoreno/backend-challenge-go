@@ -56,3 +56,19 @@ func (r *InboxRepository) IsCompleted(ctx context.Context, consumer, messageID s
 	}
 	return completedAt != nil, nil
 }
+
+// GetHash devolve o hash armazenado da mensagem, usado para verificar que a
+// reentrega carrega o MESMO conteúdo (MESSAGING §3 — hash divergente → DLQ).
+func (r *InboxRepository) GetHash(ctx context.Context, consumer, messageID string) (string, error) {
+	var hash string
+	err := r.tx.QueryRow(ctx,
+		`SELECT payload_hash FROM inbox WHERE consumer_name = $1 AND message_id = $2`,
+		consumer, messageID).Scan(&hash)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return "", ErrNotFound
+		}
+		return "", mapError(err)
+	}
+	return hash, nil
+}

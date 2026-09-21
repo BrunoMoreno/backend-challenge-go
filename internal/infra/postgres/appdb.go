@@ -23,6 +23,12 @@ func (d *Database) Begin(ctx context.Context) (storage.UnitOfWork, error) {
 	return d.Factory.Begin(ctx)
 }
 
+// BeginReadOnly abre uma transação de leitura consistente (REPEATABLE READ)
+// para a reconciliação.
+func (d *Database) BeginReadOnly(ctx context.Context) (storage.UnitOfWork, error) {
+	return d.Factory.BeginReadOnly(ctx)
+}
+
 // Compile-time: o adaptador implementa a porta do domínio de aplicação.
 var _ storage.Database = (*Database)(nil)
 var _ storage.UnitOfWork = (*UnitOfWork)(nil)

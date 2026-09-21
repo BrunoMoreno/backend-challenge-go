@@ -12,6 +12,7 @@ import (
 
 	"github.com/BrunoMoreno/backend-challenge-go/internal/app/storage"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/ledger"
+	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/money"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/wager"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/wallet"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/infra/postgres"
@@ -147,6 +148,60 @@ func (s *Service) ProviderTransaction(ctx context.Context, providerID, externalI
 		return wager.WagerTransaction{}, err
 	}
 	return t, nil
+}
+
+// Reconciliation é o resultado da conferência saldo × ledger de uma carteira.
+type Reconciliation struct {
+	WalletID          string
+	StoredBalance     money.Money
+	CalculatedBalance money.Money
+	Difference        money.Money
+	Consistent        bool
+	CheckedEntries    int64
+}
+
+// Reconcile reconstrói o saldo a partir do ledger (incluindo a abertura) e o
+// compara com o saldo armazenado, lendo ambos no mesmo snapshot REPEATABLE
+// READ somente leitura. Nunca altera o saldo.
+func (s *Service) Reconcile(ctx context.Context, walletID string) (Reconciliation, error) {
+	uow, err := s.db.BeginReadOnly(ctx)
+	if err != nil {
+		return Reconciliation{}, err
+	}
+	defer uow.Rollback(ctx)
+
+	w, err := uow.Wallets().Get(ctx, walletID)
+	if errors.Is(err, postgres.ErrNotFound) {
+		return Reconciliation{}, ErrWalletNotFound
+	}
+	if err != nil {
+		return Reconciliation{}, err
+	}
+
+	agg, err := uow.Ledger().AggregateByWallet(ctx, walletID)
+	if err != nil {
+		return Reconciliation{}, err
+	}
+
+	// Calculado = créditos − débitos; difference = armazenado − calculado.
+	credits := money.MoneyOf(agg.CreditsMinor, w.Currency())
+	debits := money.MoneyOf(agg.DebitsMinor, w.Currency())
+	calculated, err := credits.Sub(debits)
+	if err != nil {
+		return Reconciliation{}, err
+	}
+	difference, err := w.Balance().Sub(calculated)
+	if err != nil {
+		return Reconciliation{}, err
+	}
+	return Reconciliation{
+		WalletID:          walletID,
+		StoredBalance:     w.Balance(),
+		CalculatedBalance: calculated,
+		Difference:        difference,
+		Consistent:        difference.IsZero(),
+		CheckedEntries:    agg.Count,
+	}, nil
 }
 
 // cursor é o payload opaco da paginação do extrato (keyset). JSON + base64url

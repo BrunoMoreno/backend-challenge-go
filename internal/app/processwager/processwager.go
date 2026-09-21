@@ -32,6 +32,10 @@ var (
 	// ErrStaleClaim indica que o dono de um claim concorrente desfez a
 	// transação; o Process repete o ciclo com uma transação nova.
 	ErrStaleClaim = errors.New("processwager: claim concorrente desfeito, reprocessar")
+	// ErrPendingReference indica que a referência de uma linha PENDING_REFERENCE
+	// ainda não está disponível (alvo ausente ou não-terminal). O worker de
+	// referências (M6) usa o erro para reagendar a tentativa com backoff.
+	ErrPendingReference = errors.New("processwager: referência ainda não disponível")
 )
 
 // Input é a operação do provedor já validada estruturalmente (o transporte
@@ -74,8 +78,9 @@ func NewServiceWithIDs(db storage.Database, newID func() string) *Service {
 	return &Service{db: db, newID: newID}
 }
 
-// Process executa a operação. Corridas de claim (outro processador desfez a
-// transação) são refeitas com limite de tentativas.
+// Process executa a operação abrindo a própria transação (canal HTTP). Corridas
+// de claim (outro processador desfez a transação) são refeitas com limite de
+// tentativas.
 func (s *Service) Process(ctx context.Context, in Input) (Result, error) {
 	if err := validate(in); err != nil {
 		return Result{}, err
@@ -96,13 +101,64 @@ func (s *Service) Process(ctx context.Context, in Input) (Result, error) {
 	}
 	const maxAttempts = 3
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		res, err := s.tryProcess(ctx, in, hash)
-		if errors.Is(err, ErrStaleClaim) {
+		uow, err := s.db.Begin(ctx)
+		if err != nil {
+			return Result{}, err
+		}
+		res, dirty, err := s.processOne(ctx, uow, in, hash)
+		if errors.Is(err, ErrStaleClaim) || errors.Is(err, postgres.ErrDeadlock) {
+			// Deadlock (40P01): o Postgres aborta a transação perdedora; a
+			// operação foi totalmente revertida e pode ser reexecutada. Na
+			// corrida de duas BETs (M3.6) o retry encontra o saldo já movido
+			// e rejeita com INSUFFICIENT_FUNDS — o desfecho esperado.
+			_ = uow.Rollback(ctx)
 			continue
 		}
-		return res, err
+		if err != nil {
+			_ = uow.Rollback(ctx)
+			return Result{}, err
+		}
+		if dirty {
+			if cerr := uow.Commit(ctx); cerr != nil {
+				if errors.Is(cerr, postgres.ErrDeadlock) {
+					_ = uow.Rollback(ctx)
+					continue
+				}
+				return Result{}, cerr
+			}
+		} else {
+			_ = uow.Rollback(ctx)
+		}
+		return res, nil
 	}
 	return Result{}, fmt.Errorf("%w: limite de tentativas", ErrStaleClaim)
+}
+
+// ProcessOn executa a operação sobre um UnitOfWork já aberto, sem abrir nem
+// cometer transação: o consumidor SQS compartilha a mesma transação SQL da
+// inbox com o caso de uso (MESSAGING §3). O chamador decide Commit/Rollback e
+// reprocessa ErrStaleClaim em uma transação nova. O replay (`IdempotentReplay`)
+// também é devolvido sem escrever nada além do que o chamador fizer.
+func (s *Service) ProcessOn(ctx context.Context, uow storage.UnitOfWork, in Input) (Result, error) {
+	if err := validate(in); err != nil {
+		return Result{}, err
+	}
+	hash, err := wager.HashPayload(wager.PayloadFields{
+		ProviderID:                     in.ProviderID,
+		ExternalTransactionID:          in.ExternalTransactionID,
+		PlayerID:                       in.PlayerID,
+		WalletID:                       in.WalletID,
+		RoundID:                        in.RoundID,
+		GameID:                         in.GameID,
+		Kind:                           in.Kind,
+		Amount:                         in.Amount,
+		ReferenceExternalTransactionID: in.ReferenceExternalTransactionID,
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	res, _, err := s.processOne(ctx, uow, in, hash)
+	return res, err
 }
 
 // validate garante as regras antes de qualquer claim no banco.
@@ -125,31 +181,32 @@ func validate(in Input) error {
 	return nil
 }
 
-// tryProcess é a tentativa em uma transação nova. Retorna ErrStaleClaim quando
-// o claim concorrente com a mesma chave foi desfeito (rollback) e a operação
-// precisa ser reexecutada do zero.
-func (s *Service) tryProcess(ctx context.Context, in Input, hash string) (Result, error) {
-	uow, err := s.db.Begin(ctx)
-	if err != nil {
-		return Result{}, err
-	}
-	defer func() { _ = uow.Rollback(ctx) }()
-
+// processOne executa uma tentativa da operação sobre uma transação já aberta.
+// Não abre nem desfaz a transação — o chamador decide o destino. O booleano
+// retornado (`dirty`) indica se houve escrita a commit: `true` em paths de
+// movimentação/rejeição/pendência; `false` em replays (leitura) e conflitos.
+// Retorna ErrStaleClaim quando o claim concorrente com a mesma chave foi
+// desfeito (rollback) e a operação precisa ser reexecutada do zero.
+func (s *Service) processOne(ctx context.Context, uow storage.UnitOfWork, in Input, hash string) (Result, bool, error) {
 	tx, err := wager.NewExternal(s.newID(), in.ProviderID, in.ExternalTransactionID,
 		in.IdempotencyKey, hash, in.WalletID, in.PlayerID, in.RoundID, in.GameID,
 		in.Kind, in.Amount, in.ReferenceExternalTransactionID)
 	if err != nil {
-		return Result{}, err
+		return Result{}, false, err
 	}
 
 	inserted, err := uow.Wagers().InsertIfAbsent(ctx, tx)
 	if err != nil {
-		return s.conflict(ctx, in, hash, err)
+		// O 23505 aborta a transação atual; a confirmação usa outra (conflict).
+		res, cerr := s.conflict(ctx, in, hash, err)
+		return res, false, cerr
 	}
 	if !inserted {
-		return s.replayByKey(ctx, uow, in, hash)
+		res, rerr := s.replayByKey(ctx, uow, in, hash)
+		return res, false, rerr
 	}
-	return s.apply(ctx, uow, tx, in)
+	res, aerr := s.apply(ctx, uow, tx, in)
+	return res, aerr == nil, aerr
 }
 
 // conflict trata a falha do INSERT. O ON CONFLICT (idempotency_key) DO NOTHING
@@ -218,6 +275,8 @@ func (s *Service) replayResult(ctx context.Context, uow storage.UnitOfWork, exis
 
 // apply executa a movimentação para uma operação nova (claim próprio),
 // seguindo a ordem de locks G3: claim de idempotência → lock da carteira.
+// A resolução da referência decide entre pendência, rejeição imediata ou
+// movimentação (applyResolved).
 func (s *Service) apply(ctx context.Context, uow storage.UnitOfWork, tx wager.WagerTransaction, in Input) (Result, error) {
 	wal, err := uow.Wallets().LockForUpdate(ctx, in.WalletID)
 	if err != nil {
@@ -250,6 +309,15 @@ func (s *Service) apply(ctx context.Context, uow storage.UnitOfWork, tx wager.Wa
 		}
 	}
 
+	return s.applyResolved(ctx, uow, wal, tx, &target, in)
+}
+
+// applyResolved executa a movimentação financeira de uma transação cuja
+// referência já foi resolvida (ou que não tem referência): aplica o movimento
+// na carteira, grava o ledger, persiste o terminal e emite os eventos.
+// Reutilizado pelo caminho síncrono e pelo worker de referências (M6).
+func (s *Service) applyResolved(ctx context.Context, uow storage.UnitOfWork, wal wallet.Wallet,
+	tx wager.WagerTransaction, target *wager.WagerTransaction, in Input) (Result, error) {
 	before := wal.Balance()
 	var rejection wager.FailureCode
 	var moveDir ledger.Direction
@@ -260,7 +328,7 @@ func (s *Service) apply(ctx context.Context, uow storage.UnitOfWork, tx wager.Wa
 		}
 	case wager.KindWin:
 		if in.ReferenceExternalTransactionID != "" {
-			if err := wager.ValidateWinReference(tx, target); err != nil {
+			if err := wager.ValidateWinReference(tx, *target); err != nil {
 				switch {
 				case errors.Is(err, wager.ErrReferenceMismatch):
 					return s.reject(ctx, uow, &tx, wager.FailureReferenceMismatch)
@@ -311,7 +379,7 @@ func (s *Service) apply(ctx context.Context, uow storage.UnitOfWork, tx wager.Wa
 		} else if rerr != nil && !errors.Is(rerr, postgres.ErrNotFound) {
 			return Result{}, rerr
 		}
-		mv, rerr := wager.ResolveReversal(tx, target)
+		mv, rerr := wager.ResolveReversal(tx, *target)
 		if rerr != nil {
 			switch {
 			case errors.Is(rerr, wager.ErrReferenceMismatch):
@@ -390,11 +458,79 @@ func (s *Service) apply(ctx context.Context, uow storage.UnitOfWork, tx wager.Wa
 		}
 	}
 
-	if err := uow.Commit(ctx); err != nil {
-		return Result{}, err
-	}
 	b := tx.ResultBalance()
 	return Result{TransactionID: tx.ID(), State: wager.StateProcessed, Balance: &b}, nil
+}
+
+// ResolvePending tenta resolver a referência de uma transação PENDING_REFERENCE
+// (ou PENDING retomada pelo varredor M6.3): re-classifica o alvo pela
+// referência externa e, quando terminal e PROCESSED, aplica a movimentação, o
+// ledger e os eventos — o mesmo caminho do processo síncrono. Alvo ainda
+// indisponível → ErrPendingReference (o worker agenda o retry com backoff).
+// Não abre nem comita transação: o chamador (worker 6.1) decide o destino.
+func (s *Service) ResolvePending(ctx context.Context, uow storage.UnitOfWork, pending wager.WagerTransaction) (Result, error) {
+	switch pending.State() {
+	case wager.StatePendingReference, wager.StatePending:
+	default:
+		return Result{}, fmt.Errorf("processwager: ResolvePending: estado %s", pending.State())
+	}
+	if pending.Kind() == wager.KindOpening {
+		return Result{}, fmt.Errorf("processwager: ResolvePending: OPENING não tem referência")
+	}
+	in := inputOf(pending)
+
+	wal, err := uow.Wallets().LockForUpdate(ctx, pending.WalletID())
+	if err != nil {
+		if errors.Is(err, postgres.ErrNotFound) {
+			return Result{}, ErrWalletNotFound
+		}
+		return Result{}, err
+	}
+	if string(wal.Currency()) != string(pending.Amount().Currency()) {
+		return Result{}, ErrWalletCurrencyMismatch
+	}
+
+	var target wager.WagerTransaction
+	if in.ReferenceExternalTransactionID != "" {
+		t, still, rej, rerr := resolveReference(ctx, uow, in.ProviderID, in.ReferenceExternalTransactionID)
+		if rerr != nil {
+			return Result{}, rerr
+		}
+		if still {
+			return Result{}, ErrPendingReference
+		}
+		if rej != "" {
+			return s.reject(ctx, uow, &pending, rej)
+		}
+		target = t
+	}
+	return s.applyResolved(ctx, uow, wal, pending, &target, in)
+}
+
+// RejectPending aplica a rejeição definitiva a uma transação ainda não-terminal
+// (ex.: REFERENCE_NOT_FOUND por TTL/limite de tentativas no worker de
+// referências), persistindo o desfecho e o evento de rejeição na outbox.
+// Não abre nem comita transação — o chamador decide o destino.
+func (s *Service) RejectPending(ctx context.Context, uow storage.UnitOfWork, pending wager.WagerTransaction, code wager.FailureCode) (Result, error) {
+	return s.reject(ctx, uow, &pending, code)
+}
+
+// inputOf reconstrói o Input de uma transação já persistida (rehidratação para
+// a resolução tardia da referência). Sem revalidação: a linha veio do banco
+// como operação externa válida.
+func inputOf(p wager.WagerTransaction) Input {
+	return Input{
+		ProviderID:                     p.ProviderID(),
+		ExternalTransactionID:          p.ExternalTransactionID(),
+		PlayerID:                       p.PlayerID(),
+		WalletID:                       p.WalletID(),
+		RoundID:                        p.RoundID(),
+		GameID:                         p.GameID(),
+		Kind:                           p.Kind(),
+		Amount:                         p.Amount(),
+		ReferenceExternalTransactionID: p.ReferenceExternalTransactionID(),
+		IdempotencyKey:                 p.IdempotencyKey(),
+	}
 }
 
 // resolveReference classifica o alvo de uma referência (ARCHITECTURE §6):
@@ -420,7 +556,8 @@ func resolveReference(ctx context.Context, uow storage.UnitOfWork, providerID, r
 
 // pendReference persiste PENDING_REFERENCE (mantendo o claim de idempotência,
 // sem movimentar saldo/ledger) e o evento de espera. Devolve o Result do 202;
-// a resolução posterior fica a cargo do worker de referências (M6).
+// a resolução posterior fica a cargo do worker de referências (M6). Não faz
+// commit: a transação é concluída pelo chamador (Process/ProcessOn).
 func (s *Service) pendReference(ctx context.Context, uow storage.UnitOfWork, tx *wager.WagerTransaction) (Result, error) {
 	if err := tx.PendForReference(); err != nil {
 		return Result{}, err
@@ -441,13 +578,11 @@ func (s *Service) pendReference(ctx context.Context, uow storage.UnitOfWork, tx 
 	if err := uow.Outbox().Insert(ctx, env); err != nil {
 		return Result{}, err
 	}
-	if err := uow.Commit(ctx); err != nil {
-		return Result{}, err
-	}
 	return Result{TransactionID: tx.ID(), State: wager.StatePendingReference}, nil
 }
 
-// reject persiste a rejeição definitiva e o evento correspondente.
+// reject persiste a rejeição definitiva e o evento correspondente. Não faz
+// commit: a transação é concluída pelo chamador (Process/ProcessOn).
 func (s *Service) reject(ctx context.Context, uow storage.UnitOfWork, tx *wager.WagerTransaction, code wager.FailureCode) (Result, error) {
 	if err := tx.Reject(code); err != nil {
 		return Result{}, err
@@ -467,9 +602,6 @@ func (s *Service) reject(ctx context.Context, uow storage.UnitOfWork, tx *wager.
 		return Result{}, err
 	}
 	if err := uow.Outbox().Insert(ctx, env); err != nil {
-		return Result{}, err
-	}
-	if err := uow.Commit(ctx); err != nil {
 		return Result{}, err
 	}
 	return Result{TransactionID: tx.ID(), State: wager.StateRejected, FailureCode: code}, nil

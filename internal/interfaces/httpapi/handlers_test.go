@@ -47,16 +47,18 @@ func (f *fakeWagerService) Process(_ context.Context, in processwager.Input) (pr
 }
 
 type fakeQueryService struct {
-	wallet      wallet.Wallet
-	walletErr   error
-	page        query.LedgerPage
-	pageErr     error
-	pageLimit   int
-	pageCursor  string
-	tx          wager.WagerTransaction
-	txErr       error
-	providerTx  wager.WagerTransaction
-	providerErr error
+	wallet       wallet.Wallet
+	walletErr    error
+	page         query.LedgerPage
+	pageErr      error
+	pageLimit    int
+	pageCursor   string
+	tx           wager.WagerTransaction
+	txErr        error
+	providerTx   wager.WagerTransaction
+	providerErr  error
+	reconcile    query.Reconciliation
+	reconcileErr error
 }
 
 func (f *fakeQueryService) Wallet(context.Context, string) (wallet.Wallet, error) {
@@ -72,6 +74,9 @@ func (f *fakeQueryService) Transaction(context.Context, string) (wager.WagerTran
 }
 func (f *fakeQueryService) ProviderTransaction(context.Context, string, string) (wager.WagerTransaction, error) {
 	return f.providerTx, f.providerErr
+}
+func (f *fakeQueryService) Reconcile(context.Context, string) (query.Reconciliation, error) {
+	return f.reconcile, f.reconcileErr
 }
 
 // --- helpers ---
@@ -348,4 +353,68 @@ func TestLedgerInvalidCursor(t *testing.T) {
 		t.Fatalf("status = %d, want 400 (%s)", rec.Code, rec.Body.String())
 	}
 	assertErrorCode(t, rec, "INVALID_CURSOR")
+}
+
+// --- POST /wallets/:walletId/reconciliation ---
+
+func TestReconcileOK(t *testing.T) {
+	f := fakeQueryService{reconcile: query.Reconciliation{
+		WalletID:          "w-1",
+		StoredBalance:     money.MoneyOf(975, "BRL"),
+		CalculatedBalance: money.MoneyOf(975, "BRL"),
+		Difference:        money.MoneyOf(0, "BRL"),
+		Consistent:        true,
+		CheckedEntries:    2,
+	}}
+	h := testHandler(Deps{Verifier: stubVerifier{id: internalIdentity()}, Queries: &f})
+	rec := doReq(h, http.MethodPost, "/wallets/w-1/reconciliation", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	got := decodeBody[reconciliationDTO](t, rec)
+	if got.WalletID != "w-1" || !got.Consistent || got.CheckedEntries != 2 {
+		t.Fatalf("reconciliação inválida: %+v", got)
+	}
+	if got.StoredBalance.String() != "9.75" || got.Difference.String() != "0.00" {
+		t.Fatalf("valores monetários errados: %+v", got)
+	}
+}
+
+func TestReconcileInconsistent(t *testing.T) {
+	f := fakeQueryService{reconcile: query.Reconciliation{
+		WalletID:          "w-1",
+		StoredBalance:     money.MoneyOf(1000, "BRL"),
+		CalculatedBalance: money.MoneyOf(975, "BRL"),
+		Difference:        money.MoneyOf(25, "BRL"),
+		Consistent:        false,
+		CheckedEntries:    2,
+	}}
+	h := testHandler(Deps{Verifier: stubVerifier{id: internalIdentity()}, Queries: &f})
+	rec := doReq(h, http.MethodPost, "/wallets/w-1/reconciliation", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	got := decodeBody[reconciliationDTO](t, rec)
+	if got.Consistent || got.Difference.String() != "0.25" {
+		t.Fatalf("divergência mal reportada: %+v", got)
+	}
+}
+
+func TestReconcileWalletNotFound(t *testing.T) {
+	f := fakeQueryService{reconcileErr: query.ErrWalletNotFound}
+	h := testHandler(Deps{Verifier: stubVerifier{id: internalIdentity()}, Queries: &f})
+	rec := doReq(h, http.MethodPost, "/wallets/nao-existe/reconciliation", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (%s)", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec, "WALLET_NOT_FOUND")
+}
+
+func TestReconcileForbiddenForProvider(t *testing.T) {
+	h := testHandler(Deps{Verifier: stubVerifier{id: providerIdentity()}, Queries: &fakeQueryService{}})
+	rec := doReq(h, http.MethodPost, "/wallets/w-1/reconciliation", "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (%s)", rec.Code, rec.Body.String())
+	}
 }
