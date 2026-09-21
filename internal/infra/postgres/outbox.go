@@ -8,10 +8,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// OutboxRow é a linha pronta para publicação (claim de lease).
+// OutboxRow é a linha pronta para publicação (claim de lease). Attempts é o
+// número de tentativas anteriores de publicação (para o backoff exponencial).
 type OutboxRow struct {
-	EventID string
-	WaitFor time.Time
+	EventID  string
+	WaitFor  time.Time
+	Attempts int
 }
 
 // OutboxRepository persiste leases de eventos a publicar.
@@ -51,7 +53,7 @@ func (r *OutboxRepository) ClaimPending(ctx context.Context, limit int, lease ti
 		         ORDER BY occurred_at
 		         LIMIT $2
 		         FOR UPDATE SKIP LOCKED)
-		RETURNING event_id, locked_until`, lease, limit)
+		RETURNING event_id, locked_until, attempts`, lease, limit)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -60,7 +62,7 @@ func (r *OutboxRepository) ClaimPending(ctx context.Context, limit int, lease ti
 	var out []OutboxRow
 	for rows.Next() {
 		var r OutboxRow
-		if err := rows.Scan(&r.EventID, &r.WaitFor); err != nil {
+		if err := rows.Scan(&r.EventID, &r.WaitFor, &r.Attempts); err != nil {
 			return nil, mapError(err)
 		}
 		out = append(out, r)
