@@ -15,6 +15,7 @@ import (
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/money"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/wager"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/wallet"
+	"github.com/BrunoMoreno/backend-challenge-go/internal/platform/metrics"
 )
 
 const (
@@ -36,6 +37,8 @@ type Deps struct {
 	Queries QueryService
 	// Ready é o probe de prontidão (PostgreSQL, e SQS a partir do M7).
 	Ready func(ctx context.Context) error
+	// Metrics instrumenta as requisições HTTP; nil desativa.
+	Metrics *metrics.Metrics
 }
 
 // WalletService é a porta de abertura de carteiras exigida pelo HTTP.

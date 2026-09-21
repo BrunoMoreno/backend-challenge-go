@@ -30,8 +30,11 @@ type JWKSVerifier struct {
 	jwksURL  string
 	client   *http.Client
 	ttl      time.Duration
+	lazy     bool
 
 	mu        sync.RWMutex
+	initOnce  sync.Once
+	initErr   error
 	keys      map[string]*rsa.PublicKey
 	fetchedAt time.Time
 }
@@ -41,22 +44,43 @@ func NewJWKSVerifier(ctx context.Context, issuer, jwksURL, audience string) (*JW
 	if jwksURL == "" {
 		return nil, errors.New("httpapi: APP_KEYCLOAK_JWKS_URL vazia")
 	}
-	v := &JWKSVerifier{
-		issuer:   issuer,
-		audience: audience,
-		jwksURL:  jwksURL,
-		client:   &http.Client{Timeout: 5 * time.Second},
-		ttl:      jwksTTL,
-	}
+	v := newJWKSVerifier(issuer, jwksURL, audience)
 	if err := v.refresh(ctx); err != nil {
 		return nil, fmt.Errorf("httpapi: carregar JWKS: %w", err)
 	}
 	return v, nil
 }
 
+// NewLazyJWKSVerifier monta o verifier sem contato de rede na construção; a
+// primeira verificação faz a carga do JWKS. O Fx usa esta variante para a
+// composição validar sem depender de o Keycloak estar no ar.
+func NewLazyJWKSVerifier(issuer, jwksURL, audience string) (*JWKSVerifier, error) {
+	if jwksURL == "" {
+		return nil, errors.New("httpapi: APP_KEYCLOAK_JWKS_URL vazia")
+	}
+	v := newJWKSVerifier(issuer, jwksURL, audience)
+	v.lazy = true
+	return v, nil
+}
+
+func newJWKSVerifier(issuer, jwksURL, audience string) *JWKSVerifier {
+	return &JWKSVerifier{
+		issuer:   issuer,
+		audience: audience,
+		jwksURL:  jwksURL,
+		client:   &http.Client{Timeout: 5 * time.Second},
+		ttl:      jwksTTL,
+	}
+}
+
 // Verify valida o token bruto e devolve a identidade. Qualquer falha resulta em
 // ErrUnauthenticated (sem vazar detalhes ao cliente).
 func (v *JWKSVerifier) Verify(ctx context.Context, raw string) (Identity, error) {
+	if v.lazy {
+		if err := v.ensureKeys(ctx); err != nil {
+			return Identity{}, ErrUnauthenticated
+		}
+	}
 	parts := strings.Split(raw, ".")
 	if len(parts) != 3 {
 		return Identity{}, ErrUnauthenticated
@@ -134,6 +158,13 @@ func (v *JWKSVerifier) verifySignature(ctx context.Context, key *rsa.PublicKey, 
 		return ErrUnauthenticated
 	}
 	return nil
+}
+
+// ensureKeys carrega o JWKS uma única vez na conjugação lazily; falha aberta
+// → ErrUnauthenticated. Sempre verifica antes de servir a primeira requisição.
+func (v *JWKSVerifier) ensureKeys(ctx context.Context) error {
+	v.initOnce.Do(func() { v.initErr = v.refresh(ctx) })
+	return v.initErr
 }
 
 // publicKey devolve a chave do `kid`, atualizando o cache quando necessário.

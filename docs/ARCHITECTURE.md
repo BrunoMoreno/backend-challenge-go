@@ -41,7 +41,7 @@
 - Operações sem dependência concluem em **uma transação**: insert `PENDING` → aplicar → `PROCESSED`/`REJECTED` → ledger → outbox → commit. Não há commit intermediário de aceite.
 - Rejeição de negócio é **commitada** (registro + evento) e reproduzida em replays.
 - Falha **transitória** (timeout, conexão, deadlock): rollback, nada persistido, `503`/retry. `FAILED` é só falha permanente de infraestrutura/dados, com `failure_code`, para auditoria.
-- Varredor de segurança: `PENDING` antigo é retomado por qualquer instância (`FOR UPDATE SKIP LOCKED`), cobrindo qualquer aceite assíncrono futuro.
+- Varredor de segurança: `PENDING` órfão do slot de crash do claim (com `reference_external_id`) é retomado por qualquer instância (`FOR UPDATE SKIP LOCKED`), cobrindo qualquer aceite assíncrono futuro. Operações sem referência nunca ficam paradas em `PENDING`: são resolvidas pelo produtor no caminho idempotente.
 
 ## 6. Reversões e referências
 
@@ -56,6 +56,8 @@ Resolução por `(providerId, referenceExternalTransactionId)`.
 | Tipo inválido (`REFUND` só sobre `BET`; `ROLLBACK` sobre `BET/WIN/REFUND`) | `REJECTED INVALID_REFERENCE_KIND` |
 | Já revertida | `REJECTED ALREADY_REVERSED` |
 | Reversão exigiria débito > saldo | `REJECTED REVERSAL_INSUFFICIENT_FUNDS` (≠ `INSUFFICIENT_FUNDS` de `BET`) |
+
+**Resolução tardia (M6, RF-05):** o `reference-worker` (`internal/infra/referenceworker`, papel `APP_ROLES=reference-worker`) reclama em cada ciclo um lote (`APP_REFERENCE_WORKER_BATCH_SIZE`, 10) de pendências vencidas — `PENDING_REFERENCE`, ou `PENDING` com `reference_external_id` — com `FOR UPDATE SKIP LOCKED` no `next_attempt_at` (`ORDER BY next_attempt_at NULLS FIRST`). Todo o ciclo roda em **uma transação**: o lock da linha é o lease (commit encerra a posse), sem tabela de lease separada; clones concorrentes não reclamam a mesma linha. Para cada pendência: expirada (TTL desde `created_at`, 24 h) ou `attempt >= max_attempts` (30) → `REJECTED REFERENCE_NOT_FOUND` (evento na outbox); senão `ResolvePending` re-execução do caso de uso (movimentação + ledger + outbox no mesmo commit), alvo ainda ausente → `PEND_FOR_REFERENCE`/`NextAttempt` com backoff (base `APP_REFERENCE_WORKER_BACKOFF_BASE` 1 s, teto `_MAX` 15 min, jitter 30%) persistido como próximo `next_attempt_at`. Falha em qualquer linha aborta o lote (rollback); a próxima instância assume.
 
 **Regra REFUND × ROLLBACK:** índice único parcial `UNIQUE (resolved_reference_id) WHERE status='PROCESSED' AND kind IN ('REFUND','ROLLBACK')`. Cada transação-alvo recebe no máximo uma reversão bem-sucedida, de qualquer tipo, impedindo devolução duplicada do mesmo débito. Consequência: `BET` reembolsada não aceita `ROLLBACK` e vice-versa; `ROLLBACK` de um `REFUND` é permitido (alvo distinto).
 
@@ -92,25 +94,23 @@ Detalhes e contratos em `docs/MESSAGING.md`. Regra central: `inbox insert` + cas
 ## 11. Fx e ciclo de vida
 
 - Um binário, papéis por `APP_ROLES=http,sqs-consumer,outbox-publisher,reference-worker`, para escalar instâncias com a mesma imagem.
-- `fx.Module` por área: `config`, `logging`, `database`, `auth`, `wallet`, `wagering`, `outbox`, `sqsmsg`, `httpapi`, `observability`; construtores via `fx.Provide`, ativação via `fx.Invoke`.
-- `OnStart`: valida config, ping em banco/SQS, sobe workers com `context` cancelável e `WaitGroup`.
-- `OnStop` (ordem inversa): `http.Server.Shutdown` → parar polling SQS → aguardar workers com prazo → liberar visibilidade do que restou em voo → **por último** fechar pool/clients (registrados primeiro, logo param por último).
+- O grafo completo — `config`, `logging`, `database`, `auth`, `casos de uso`, `http`, `outbox`, `sqsmsg`, `metrics` — vive em `internal/app/bootstrap.Module()` (usado pelo `cmd/app` e pelos testes de composição, M8.4); construtores via `fx.Provide`, ativação por papel via `fx.Invoke`.
+- `OnStart`: pool pgx (ping), verifier JWT lazily (JWKS só na primeira verificação), sobe workers com `context` cancelável.
+- `OnStop` (ordem inversa, prazo `APP_SHUTDOWN_TIMEOUT`): parar polling SQS (drenagem) → outbox → `http.Server.Shutdown` + `/metrics` → **por último** fechar o pool (registrado primeiro, logo para por último).
 
 ## 12. Observabilidade
 
-- `log/slog` JSON com `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`; sem credenciais nem payload financeiro completo.
-- Prometheus em `/metrics`: resultados por status, duplicatas, retries, DLQ, conflitos de concorrência, atraso da outbox, latência, divergências de reconciliação.
+- `log/slog` JSON (stderr); correlação carregada no contexto e anotada em cada registro: `X-Correlation-Id` no HTTP (aceito ou gerado) e `messageId` nas mensagens SQS. Sem credenciais nem payload financeiro completo.
+- Prometheus em `/metrics` na porta própria (`APP_METRICS_ADDR`, default `:9090`, independente dos papéis): `http_requests_total` + `http_request_duration_seconds` (rota combinada por `r.Pattern`), `sqs_messages_total` (processed/dead/retry/replay), `outbox_events_total` (published/failed) e `reference_resolutions_total` (resolved/rejected/retry/expired/failed).
 
 ## 13. Estrutura de pastas
 
 ```
 cmd/app/main.go
 internal/domain/{money,wallet,ledger,wager,events}
-internal/app/{openwallet,processwager,reconcile,queries}
-internal/infra/{postgres,sqs,auth,outbox,inbox}
-internal/interfaces/{httpapi,sqsconsumer}
-internal/platform/{config,logging,metrics,fxmodules}
-migrations/   deploy/{keycloak,localstack}/   test/{integration,e2e}/
+internal/app/{openwallet,processwager,query,bootstrap}
+internal/infra/{postgres,sqs,sqsconsumer,outboxpublisher,referenceworker} internal/platform/{config,logging,backoff,metrics}
+migrations/   deploy/{keycloak,localstack}/   test/integration/
 ```
 
 ## 14. Interpretações adotadas (registrar/confirmar)
