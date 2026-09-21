@@ -56,17 +56,30 @@ services:
   app:
     build: .
     environment:
-      APP_ROLES: http,outbox-publisher,reference-worker
+      APP_ROLES: http,sqs-consumer,outbox-publisher,reference-worker
       APP_HTTP_ADDR: :8080
       APP_DATABASE_URL: postgres://wager_app:wager_app@postgres:5432/wagering?sslmode=disable
       APP_SQS_ENDPOINT: http://localstack:4566
       APP_SQS_REGION: us-east-1
+      APP_SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+      APP_SQS_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+      APP_SQS_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wager-events.fifo
+      APP_SQS_MAX_RECEIVE_COUNT: 5
+      APP_SQS_VISIBILITY_TIMEOUT: 30s
+      APP_SQS_CONSUMER_CONCURRENCY: 4
+      APP_SQS_CONSUMER_BACKOFF_BASE: 1s
+      APP_SQS_CONSUMER_BACKOFF_MAX: 15m
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
       APP_KEYCLOAK_ISSUER: http://keycloak:8080/realms/wagering
       APP_KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
       APP_KEYCLOAK_CLIENT_ID: wager-api
       APP_LOG_LEVEL: info
+      APP_METRICS_ADDR: :9090
+      APP_SHUTDOWN_TIMEOUT: 30s
     ports:
       - "8080:8080"
+      - "9090:9090"
     depends_on:
       postgres:
         condition: service_healthy
