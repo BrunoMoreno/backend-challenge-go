@@ -44,6 +44,8 @@ func buildHandler(logger *slog.Logger, deps Deps) http.Handler {
 				authChain(deps.Verifier, walletInternal)(http.HandlerFunc(a.getWallet)))
 			mux.Handle("GET /wallets/{walletId}/ledger",
 				authChain(deps.Verifier, walletInternal)(http.HandlerFunc(a.ledger)))
+			mux.Handle("POST /wallets/{walletId}/reconciliation",
+				authChain(deps.Verifier, walletInternal)(http.HandlerFunc(a.reconcile)))
 		}
 		if deps.Wagers != nil {
 			mux.Handle("POST /wagering/transactions",

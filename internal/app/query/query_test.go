@@ -23,6 +23,9 @@ type fakeDB struct {
 }
 
 func (d *fakeDB) Begin(context.Context) (storage.UnitOfWork, error) { return &fakeUoW{db: d}, nil }
+func (d *fakeDB) BeginReadOnly(context.Context) (storage.UnitOfWork, error) {
+	return &fakeUoW{db: d}, nil
+}
 
 type fakeUoW struct{ db *fakeDB }
 
@@ -70,6 +73,9 @@ func (r fakeWagerRepo) GetByReferenceExternal(context.Context, string, string) (
 }
 func (r fakeWagerRepo) GetReversalForReference(context.Context, string) (wager.WagerTransaction, error) {
 	return wager.WagerTransaction{}, postgres.ErrNotFound
+}
+func (r fakeWagerRepo) FindPendingDue(context.Context, time.Time, int) ([]wager.WagerTransaction, error) {
+	return nil, nil
 }
 func (r fakeWagerRepo) GetByID(_ context.Context, id string) (wager.WagerTransaction, error) {
 	for _, t := range r.db.wagers {
@@ -119,6 +125,22 @@ func (r fakeLedgerRepo) ListByWallet(_ context.Context, walletID string, _ money
 	return out, nil
 }
 
+func (r fakeLedgerRepo) AggregateByWallet(_ context.Context, walletID string) (storage.LedgerAggregate, error) {
+	var a storage.LedgerAggregate
+	for _, e := range r.db.ledger {
+		if e.WalletID() != walletID {
+			continue
+		}
+		if e.Direction() == ledger.DirectionCredit {
+			a.CreditsMinor += e.Amount().Minor()
+		} else {
+			a.DebitsMinor += e.Amount().Minor()
+		}
+		a.Count++
+	}
+	return a, nil
+}
+
 type fakeOutboxRepo struct{}
 
 func (r fakeOutboxRepo) Insert(context.Context, events.Envelope) error { return nil }
@@ -138,6 +160,18 @@ func entry(t *testing.T, id, txID string, at time.Time, after int64) ledger.Entr
 	t.Helper()
 	e, err := ledger.New(id, "w-1", txID, ledger.DirectionCredit,
 		money.MoneyOf(1000, "BRL"), money.MoneyOf(after-1000, "BRL"),
+		money.MoneyOf(after, "BRL"), at)
+	if err != nil {
+		t.Fatalf("ledger.New: %v", err)
+	}
+	return e
+}
+
+func ledgerEntryOf(t *testing.T, id string, dir ledger.Direction,
+	amount, before, after int64, at time.Time) ledger.Entry {
+	t.Helper()
+	e, err := ledger.New(id, "w-1", "tx-"+id, dir,
+		money.MoneyOf(amount, "BRL"), money.MoneyOf(before, "BRL"),
 		money.MoneyOf(after, "BRL"), at)
 	if err != nil {
 		t.Fatalf("ledger.New: %v", err)
@@ -273,5 +307,56 @@ func TestProviderTransactionNotFound(t *testing.T) {
 	svc := NewService(&fakeDB{})
 	if _, err := svc.ProviderTransaction(context.Background(), "provider-a", "e-1"); err != ErrTransactionNotFound {
 		t.Fatalf("err = %v, want ErrTransactionNotFound", err)
+	}
+}
+
+func TestReconcileComputesBalance(t *testing.T) {
+	now := time.Now().UTC()
+	entries := []ledger.Entry{
+		ledgerEntryOf(t, "l-1", ledger.DirectionCredit, 1000, 0, 1000, now),
+		ledgerEntryOf(t, "l-2", ledger.DirectionDebit, 25, 1000, 975, now.Add(time.Second)),
+	}
+	db := &fakeDB{
+		wallets: []wallet.Wallet{walletOf(t, "w-1", 975)},
+		ledger:  entries,
+	}
+	svc := NewService(db)
+
+	res, err := svc.Reconcile(context.Background(), "w-1")
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if res.StoredBalance.Minor() != 975 || res.CalculatedBalance.Minor() != 975 {
+		t.Fatalf("saldo = %d/%d, want 975/975", res.StoredBalance.Minor(), res.CalculatedBalance.Minor())
+	}
+	if !res.Consistent || !res.Difference.IsZero() || res.CheckedEntries != 2 {
+		t.Fatalf("reconciliação = %+v, want consistente/0/2", res)
+	}
+}
+
+func TestReconcileReportsDivergence(t *testing.T) {
+	now := time.Now().UTC()
+	entries := []ledger.Entry{
+		ledgerEntryOf(t, "l-1", ledger.DirectionCredit, 1000, 0, 1000, now),
+		ledgerEntryOf(t, "l-2", ledger.DirectionDebit, 25, 1000, 975, now.Add(time.Second)),
+	}
+	db := &fakeDB{
+		// Saldo armazenado diverge do reconstruído (975): carteira com 950.
+		wallets: []wallet.Wallet{walletOf(t, "w-1", 950)},
+		ledger:  entries,
+	}
+	res, err := NewService(db).Reconcile(context.Background(), "w-1")
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if res.Consistent || res.Difference.Minor() != -25 {
+		t.Fatalf("divergência = %+v, want inconsistent/-25", res)
+	}
+}
+
+func TestReconcileWalletNotFound(t *testing.T) {
+	svc := NewService(&fakeDB{})
+	if _, err := svc.Reconcile(context.Background(), "x"); err != ErrWalletNotFound {
+		t.Fatalf("err = %v, want ErrWalletNotFound", err)
 	}
 }

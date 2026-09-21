@@ -130,3 +130,16 @@ func (f *UnitOfWorkFactory) Begin(ctx context.Context) (*UnitOfWork, error) {
 	}
 	return newUnitOfWork(ctx, tx), nil
 }
+
+// BeginReadOnly abre uma transação somente leitura em REPEATABLE READ —
+// snapshot consistente entre saldo e ledger para a reconciliação.
+func (f *UnitOfWorkFactory) BeginReadOnly(ctx context.Context) (*UnitOfWork, error) {
+	tx, err := f.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("postgres: begin readonly: %w", mapError(err))
+	}
+	return newUnitOfWork(ctx, tx), nil
+}

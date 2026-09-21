@@ -139,6 +139,10 @@ func (d *fakeDB) Begin(ctx context.Context) (storage.UnitOfWork, error) {
 	return &fakeUoW{db: d, live: d.state.clone()}, nil
 }
 
+func (d *fakeDB) BeginReadOnly(ctx context.Context) (storage.UnitOfWork, error) {
+	return d.Begin(ctx)
+}
+
 type fakeUoW struct {
 	db   *fakeDB
 	live fakeState
@@ -279,6 +283,10 @@ func (r *fakeWagerRepo) GetReversalForReference(ctx context.Context, targetID st
 	return wager.WagerTransaction{}, postgres.ErrNotFound
 }
 
+func (r *fakeWagerRepo) FindPendingDue(context.Context, time.Time, int) ([]wager.WagerTransaction, error) {
+	return nil, nil
+}
+
 type fakeLedgerRepo struct{ u *fakeUoW }
 
 func (r *fakeLedgerRepo) Insert(ctx context.Context, e ledger.Entry) error {
@@ -311,6 +319,22 @@ func (r *fakeLedgerRepo) ListByWallet(ctx context.Context, walletID string, curr
 		entries = entries[:limit]
 	}
 	return entries, nil
+}
+
+func (r *fakeLedgerRepo) AggregateByWallet(_ context.Context, walletID string) (storage.LedgerAggregate, error) {
+	var a storage.LedgerAggregate
+	for _, e := range r.u.live.ledger {
+		if e.WalletID() != walletID {
+			continue
+		}
+		if e.Direction() == ledger.DirectionCredit {
+			a.CreditsMinor += e.Amount().Minor()
+		} else {
+			a.DebitsMinor += e.Amount().Minor()
+		}
+		a.Count++
+	}
+	return a, nil
 }
 
 type fakeOutboxRepo struct{ u *fakeUoW }

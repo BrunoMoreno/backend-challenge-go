@@ -54,6 +54,7 @@ type QueryService interface {
 	Ledger(ctx context.Context, walletID, cursor string, limit int) (query.LedgerPage, error)
 	Transaction(ctx context.Context, id string) (wager.WagerTransaction, error)
 	ProviderTransaction(ctx context.Context, providerID, externalID string) (wager.WagerTransaction, error)
+	Reconcile(ctx context.Context, walletID string) (query.Reconciliation, error)
 }
 
 // api agrupa os handlers.
@@ -91,6 +92,15 @@ type processResultDTO struct {
 	Balance          *money.Money `json:"balance,omitempty"`
 	FailureCode      string       `json:"failureCode,omitempty"`
 	IdempotentReplay bool         `json:"idempotentReplay"`
+}
+
+type reconciliationDTO struct {
+	WalletID          string      `json:"walletId"`
+	StoredBalance     money.Money `json:"storedBalance"`
+	CalculatedBalance money.Money `json:"calculatedBalance"`
+	Difference        money.Money `json:"difference"`
+	Consistent        bool        `json:"consistent"`
+	CheckedEntries    int64       `json:"checkedEntries"`
 }
 
 type transactionDTO struct {
@@ -325,6 +335,23 @@ func (a *api) getProviderTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, newTransactionDTO(t))
+}
+
+// reconcile implementa POST /wallets/:walletId/reconciliation.
+func (a *api) reconcile(w http.ResponseWriter, r *http.Request) {
+	res, err := a.deps.Queries.Reconcile(r.Context(), r.PathValue("walletId"))
+	if err != nil {
+		a.failQuery(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, reconciliationDTO{
+		WalletID:          res.WalletID,
+		StoredBalance:     res.StoredBalance,
+		CalculatedBalance: res.CalculatedBalance,
+		Difference:        res.Difference,
+		Consistent:        res.Consistent,
+		CheckedEntries:    res.CheckedEntries,
+	})
 }
 
 // parseSubmit valida o corpo de POST /wagering/transactions contra a matriz de
