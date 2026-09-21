@@ -30,6 +30,11 @@ func buildHandler(logger *slog.Logger, deps Deps) http.Handler {
 	mux := http.NewServeMux()
 	a := &api{deps: deps}
 
+	// A documentação é pública: permite que integradores conheçam o contrato
+	// sem precisar de credenciais de uma carteira ou de um provedor.
+	mux.HandleFunc("GET /openapi.yaml", handleOpenAPI)
+	mux.HandleFunc("GET /swagger", handleSwaggerUI)
+	mux.HandleFunc("GET /swagger/", handleSwaggerUI)
 	mux.HandleFunc("GET /health/live", handleLive(logger))
 	if deps.Ready != nil {
 		mux.HandleFunc("GET /health/ready", handleReady(deps))

@@ -1,6 +1,6 @@
 # ARCHITECTURE
 
-> **Este documento define o como.** Rascunho de planejamento; será finalizado no marco M10 e é um dos entregáveis. Requisitos em `PRD.md`; contratos externos em `docs/API.md` e `docs/MESSAGING.md`.
+> **Este documento define o como.** Entregável do desafio (marco M10), mantido em dia com a implementação. Requisitos em `PRD.md`; contratos externos em `docs/API.md` e `docs/MESSAGING.md`; estratégia de testes em `docs/TESTING.md`.
 
 ## 1. Dinheiro (`Money`) — atende G1
 
@@ -85,6 +85,8 @@ Resolução por `(providerId, referenceExternalTransactionId)`.
 
 Detalhes e contratos em `docs/MESSAGING.md`. Regra central: `inbox insert` + caso de uso + `inbox complete` + outbox na **mesma transação**; `DeleteMessage` só depois do commit.
 
+O cenário de crash do consumidor (M9) roda em uma **fila FIFO dedicada** (`wager-crash-test.fifo`, recriada no `TestMain` do e2e) para que nenhuma instância em drenagem de cenários anteriores dispute a mensagem com a instância injetada com `FAULT_AFTER_COMMIT_BEFORE_DELETE`. Observamos que o LocalStack **não requeueia** mensagens cujo consumidor morreu sem delete (at-least-once é garantia do SQS real, não do emulador); a reentrega é então simulada com um retry do produtor — mesmo envelope e `messageId`, `MessageDeduplicationId` novo — que percorre exatamente o caminho de replay (hash idêntico + inbox completa → delete sem reaplicar).
+
 ## 10. Outbox
 
 - Publisher com *claim* por lease: `UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED LIMIT n) SET locked_until = now()+lease RETURNING`. Lease expirada = trabalho abandonado, assumido por outra instância.
@@ -125,4 +127,8 @@ migrations/   deploy/{keycloak,localstack}/   test/integration/
 
 ## 15. Limitações e trabalho não concluído
 
-_(preencher ao longo da implementação)_
+- **LocalStack ≠ SQS real:** não impõe IAM por padrão e **não requeueia** mensagens cujo consumidor morreu sem `DeleteMessage` (fica invisível para sempre). O e2e de crash contorna simulando a reentrega com retry do produtor (§9); em produção, o SQS redrive real entrega novamente após a visibilidade expirar — o fluxo de replay idempotente é o mesmo que validamos.
+- **Identidade do produtor SQS** depende do controle de acesso do broker (§8); o consumidor mantém todas as validações de domínio.
+- **Consistência saldo × ledger** é imposta no banco: `constraint trigger` deferida valida `wallets.balance_minor` = último `balance_after` do ledger com `version` coerente no COMMIT, e `UNIQUE(wallet_id, transaction_id)` impede lançamento duplicado (incl. após reentrega de uma mensagem já processada).
+- **Pendências de teste** (`docs/CONTEXT.md`): 4.7 isolamento de auth/keycloak via integração real e 9.5 indisponibilidade temporária de PostgreSQL/SQS em e2e — previstos, não implementados.
+- **Sem tracing distribuído (OTel)** e sem roteamento por partições personalizadas do SQS FIFO; ambos são extensões possíveis.

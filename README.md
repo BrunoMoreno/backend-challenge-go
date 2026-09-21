@@ -48,6 +48,13 @@ make kc-token CLIENT=provider-a   # access token OIDC de um provedor de teste
 
 ## Testes
 
+## Documentação da API
+
+Com o serviço em execução, a especificação OpenAPI está em
+`http://localhost:8080/openapi.yaml` e a interface Swagger UI em
+`http://localhost:8080/swagger/`. A UI carrega seus assets do CDN oficial do
+Swagger; a especificação segue acessível para importação mesmo sem internet.
+
 ```sh
 make test          # go test ./...
 make test-race     # go test -race ./...
@@ -63,7 +70,9 @@ make vet && make fmt
 > banco e as mesmas filas SQS, e instâncias externas ativas deixam os testes
 > de lease/claim (ex.: `TestOutboxCrashAfterClaimPublisherRecovers`) e as
 > pendências do `TestReferenceWorker*` não determinísticos.
-> O `TestMain` já purga as filas e zera as tabelas no início da suíte.
+> O `TestMain` já purga as filas, recria a fila do cenário de crash, mata
+> órfãos de execuções abortadas e zera as tabelas no início da suíte.
+> Use `-count=1` nas suítes e2e/integração para não reutilizar cache.
 
 ## Comandos úteis
 
@@ -75,15 +84,19 @@ make migrate-down  # reverte a última migration
 
 ## Status de implementação
 
-**M6 (worker de referências) e M8 (Fx, shutdown e observabilidade) completos** — worker em
-`internal/infra/referenceworker` (papel `APP_ROLES=reference-worker`): resolução tardia de
-`PENDING_REFERENCE` com `FOR UPDATE SKIP LOCKED`, retry com backoff exponencial
-(`APP_REFERENCE_WORKER_*`), TTL/limite de tentativas → `REFERENCE_NOT_FOUND` e varredor de
-`PENDING` órfãos. Grafo Fx final em `internal/app/bootstrap`, papéis por `APP_ROLES`, shutdown
-ordenado (`APP_SHUTDOWN_TIMEOUT`), logs JSON com correlação (`X-Correlation-Id` no HTTP,
-`messageId` no SQS) e métricas Prometheus em `APP_METRICS_ADDR` (default `:9090`, `/metrics`,
-inclui `reference_resolutions_total`). Envelope e contratos das filas em `docs/MESSAGING.md`.
-Próximo marco: **M9 — multi-instância e falhas**. Detalhes em `docs/CONTEXT.md`.
+**M0–M9 completos** — domínio puro (`Money`, ledger, máquina de estados), PostgreSQL (ledger
+append-only com constraint-trigger deferida no commit, inbox/outbox, roles de banco), casos de uso
+com idempotência persistente (`idempotentReplay`), HTTP+Keycloak (JWT/JWKS), outbox com lease
+`FOR UPDATE SKIP LOCKED`, worker de referências com resolução tardia e backoff exponencial, consumidor
+SQS com inbox transacional/retry/DLQ, grafo Fx com papéis por `APP_ROLES` e shutdown ordenado, e
+**harness multi-instância** (`test/e2e`, build tag `faultinject`): 3 processos independentes cobrindo
+disputa 100.00 × 2×80.00, 50 envios idênticos, crash do consumidor pós-commit pré-delete com
+reentrega sem duplicação e conferência final saldo × ledger + reconciliação. Suíte verde e
+determinística com `-race` (`-count=1`). Ao longo da validação, corrigidos 3 bugs em
+`internal/infra/postgres/ledger.go` (500 no `GET /wallets/{id}/ledger`): scan de named type via `pgx`,
+parâmetro SQL não usado e sentinela de cursor incompatível com o zero do Go.
 
-<!-- Preencher no M10: env completo, filas, migrations detalhadas, exemplos de curl autenticados,
-     procedimentos de integração/e2e e validação em clone limpo. -->
+Convenção de commits `ADD`/`TEST`/`FIX`; progresso e pendências (4.7, 9.5) em `docs/CONTEXT.md`.
+
+Principais variáveis de ambiente em `.env.example`; filas provisionadas por `deploy/localstack/init/queues.sh`
+e detalhes de contrato em `docs/MESSAGING.md`. Matriz de autorização, rotas e códigos de erro em `docs/API.md`.

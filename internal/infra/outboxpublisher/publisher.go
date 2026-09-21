@@ -150,6 +150,7 @@ func (p *Publisher) publishOne(ctx context.Context, env events.Envelope, next ti
 		})
 	}
 	p.cfg.Metrics.OutboxEvents("published")
+	crashAfterPublishBeforeMark(ctx, p.logger)
 	return p.mark(ctx, func(uow *postgres.UnitOfWork) error {
 		return uow.OutboxRepository.MarkPublished(ctx, env.EventID)
 	})
