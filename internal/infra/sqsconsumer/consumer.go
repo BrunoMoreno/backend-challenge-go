@@ -298,6 +298,7 @@ func (c *Consumer) handle(ctx context.Context, msg *types.Message) {
 
 	// Sucesso persistido: apaga a mensagem da fila.
 	c.cfg.Metrics.SQSMessages("processed")
+	crashAfterCommitBeforeDelete(ctx, c.logger)
 	if err := c.delete(msgCtx, msg); err != nil {
 		// A inbox já está completa; na próxima reentrega será tratada como
 		// replay e apagada — reentrega é idempotente.
