@@ -53,6 +53,15 @@ services:
       retries: 60
       start_period: 15s
 
+  migrate:
+    image: migrate/migrate:v4.18.1
+    command: ["-path=/migrations", "-database=postgres://app:app@postgres:5432/wagering?sslmode=disable", "up"]
+    volumes:
+      - ./migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   app:
     build: .
     environment:
@@ -92,6 +101,8 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   pgdata:
