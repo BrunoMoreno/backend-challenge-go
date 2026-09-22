@@ -18,6 +18,17 @@ Nada de mocks substituindo toda a infraestrutura.
 - `TestMain` compila o binário e sobe os containers uma vez por pacote.
 - Helper inicia N processos (`exec.Command`) com portas e `APP_ROLES` distintos, aguarda `/health/ready`, encerra com `SIGTERM` (graceful) ou `SIGKILL` (crash).
 - Tokens reais obtidos do Keycloak via `client_credentials`.
+- **Pools de teste limitados**: cada pool pgx da suíte usa `MaxConns=8`
+  (`newTestPool`) — a suíte abre muitos pools e o PostgreSQL do Compose opera
+  com `max_connections=100`; sem teto explícito, pools + `app` residente +
+  ferramentas externas saturam o banco (novo `BEGIN` recusado).
+- **Nada de `sleep` fixo em janelas críticas**: `noEvent` (lease) usa polling
+  estrito com long-poll zero e deadline que nunca ultrapassa o fim do lease —
+  uma leitura pós-expiração poria a publicação legítima do novo dono como
+  "durante o lease".
+- **Consumidores com `stop` em `t.Cleanup`**: `runConsumer` registra o
+  cancelamento imediatamente após o start (idempotente), garantindo que o
+  goroutine pare antes de o pool fechar mesmo se o teste falhar no meio.
 - **Pontos de falha** com a build tag `faultinject` (fora do binário de produção), acionados por env:
   - `FAULT_AFTER_COMMIT_BEFORE_DELETE` (consumidor SQS)
   - `FAULT_AFTER_PUBLISH_BEFORE_MARK` (publisher)

@@ -1,5 +1,17 @@
 • ## Há duas causas independentes, ambas ligadas a infraestrutura compartilhada.
 
+> **Resolvido** (branch `fix/solve-test-integration`): as três correções de código
+> abaixo foram aplicadas na suíte de integração e o pacote segue verde com
+> `-race -count=1` (teste do lease 5/5):
+> - `noEvent` agora faz polling estrito dentro do deadline do lease (long-poll
+>   zero + deadline que nunca ultrapassa `wait`), sem leitura após a expiração;
+> - pools de teste com `MaxConns` fixado (8) via `newTestPool`;
+> - `runConsumer` registra `stop()` como `t.Cleanup` imediatamente após o start
+>   (idempotente com `sync.Once`), garantindo o cancelamento antes do fechamento
+>   do pool.
+> A causa 1 (container `app` ativo) continua valendo como orientação de execução:
+> `docker compose stop app` antes da suíte (README §Testes).
+
 ###  1. O teste de lease está sendo contaminado pelo container app que está ativo.
 
   Confirmei que backend-challenge-go-app-1 está rodando com os papéis sqs-consumer,outbox-publisher,reference-worker e usa as mesmas filas/DB dos testes. Ele pode

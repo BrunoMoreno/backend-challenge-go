@@ -18,7 +18,6 @@ import (
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/wallet"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/infra/postgres"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func assertPgErr(t *testing.T, wantCode string, err error) {
@@ -177,11 +176,7 @@ func TestLedgerTriggerBlockUpdateDelete(t *testing.T) {
 	f := newTestUoW(t)
 	seedWallet(t, f, "wal-m6", "player-m6", "25.00", 2500)
 
-	pool, err := pgxpool.New(ctx, migrateURL())
-	if err != nil {
-		t.Fatalf("pool app: %v", err)
-	}
-	t.Cleanup(pool.Close)
+	pool := newTestPool(t, migrateURL())
 
 	for _, stmt := range []string{
 		`UPDATE wallet_ledger_entries SET amount_minor = 1 WHERE id = $1`,
@@ -306,11 +301,7 @@ func TestLedgerReconciliationCheck(t *testing.T) {
 // (versão mais recente aplicada) e que os objetos de integridade existem.
 func TestSchemaMigrationsAtLatest(t *testing.T) {
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, migrateURL())
-	if err != nil {
-		t.Fatalf("pool app: %v", err)
-	}
-	t.Cleanup(pool.Close)
+	pool := newTestPool(t, migrateURL())
 
 	var version int64
 	if err := pool.QueryRow(ctx,
