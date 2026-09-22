@@ -1,0 +1,1 @@
+DROP INDEX outbox_claim_ready_idx;

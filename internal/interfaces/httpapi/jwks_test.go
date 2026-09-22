@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -114,6 +115,36 @@ func TestJWKSVerifierRejectsUnknownKid(t *testing.T) {
 	}
 }
 
+// TestJWKSVerifierUnknownKidThrottled garante que um kid desconhecido com o
+// cache fresco não vira um GET no Keycloak por requisição (M9): a rotação é
+// atendida pelo primeiro refresh (janela de grace) e os demais são rejeitados
+// sem tocar na rede, até a janela reabrir.
+func TestJWKSVerifierUnknownKidThrottled(t *testing.T) {
+	key := mustRSAKey(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		writeJWKS(w, testKid, &key.PublicKey)
+	}))
+	t.Cleanup(srv.Close)
+
+	v := mustVerifier(t, srv.URL)
+	v.ttl = 24 * time.Hour // cache sempre fresco no teste
+
+	token := signRS256(t, key, "kid-inventado", validClaims(testAudience))
+	if _, err := v.Verify(context.Background(), token); err != ErrUnauthenticated {
+		t.Fatalf("Verify() kid desconhecido error = %v, want ErrUnauthenticated", err)
+	}
+
+	before := calls.Load() // primeiro desconhecido: refresh no limite da rotação
+	if _, err := v.Verify(context.Background(), token); err != ErrUnauthenticated {
+		t.Fatalf("Verify() segundo kid desconhecido error = %v, want ErrUnauthenticated", err)
+	}
+	if got := calls.Load(); got != before {
+		t.Fatalf("chamadas ao JWKS com kid desconhecido = %d, want %d (throttle deveria conter o GET por request)", got, before)
+	}
+}
+
 func TestJWKSVerifierRejectsAlgNone(t *testing.T) {
 	key := mustRSAKey(t)
 	v := mustVerifier(t, jwksServer(t, testKid, &key.PublicKey))
@@ -146,6 +177,46 @@ func TestJWKSVerifierRefreshesRotatedKey(t *testing.T) {
 	server.rotate(testKid, &second.PublicKey)
 	if _, err := v.Verify(context.Background(), signRS256(t, second, testKid, validClaims(testAudience))); err != nil {
 		t.Fatalf("Verify() após rotação error = %v (esperava refresh do JWKS)", err)
+	}
+}
+
+// TestJWKSVerifierLazyRecoversAfterInitialFailure garante que a falha inicial
+// do JWKS (Keycloak fora do ar) não é memoizada: sem restart, a recuperação da
+// fonte volta a autenticar. Também prova o backoff — a fonte não é martelada a
+// cada request durante a indisponibilidade.
+func TestJWKSVerifierLazyRecoversAfterInitialFailure(t *testing.T) {
+	key := mustRSAKey(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 { // só a primeira chamada falha
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		writeJWKS(w, testKid, &key.PublicKey)
+	}))
+	t.Cleanup(srv.Close)
+
+	v, err := NewLazyJWKSVerifier(testIssuer, srv.URL, testAudience)
+	if err != nil {
+		t.Fatalf("NewLazyJWKSVerifier() error = %v", err)
+	}
+	v.initRetryAfter = 5 * time.Millisecond
+
+	token := signRS256(t, key, testKid, validClaims(testAudience))
+
+	if _, err := v.Verify(context.Background(), token); err != ErrUnauthenticated {
+		t.Fatalf("Verify() com o JWKS fora do ar error = %v, want ErrUnauthenticated", err)
+	}
+	if _, err := v.Verify(context.Background(), token); err != ErrUnauthenticated {
+		t.Fatalf("Verify() dentro da janela de backoff error = %v, want ErrUnauthenticated", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("chamadas ao JWKS durante indisponibilidade = %d, want 1 (backoff deveria conter o GET por request)", got)
+	}
+
+	time.Sleep(6 * time.Millisecond) // backoff expirado
+	if _, err := v.Verify(context.Background(), token); err != nil {
+		t.Fatalf("Verify() após o Keycloak voltar error = %v, want nil (recuperação sem restart)", err)
 	}
 }
 

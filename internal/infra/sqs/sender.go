@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -30,15 +31,24 @@ type Sender struct {
 }
 
 // NewClient monta o cliente SQS apontando para o broker configurado (código
-// compartilhado por sender e consumidor). Credenciais locais não são
-// autenticadas pelo LocalStack, mas o SDK exige algo para assinar requisições.
+// compartilhado por sender e consumidor). A cadeia de credenciais default do
+// SDK (env vars, profile, IRSA/IAM) é respeitada — antes as credenciais
+// estáticas "test/test" eram forçadas e anulavam AWS_ACCESS_KEY_ID/IRSA,
+// sem caminho de produção para AWS real (docs/solve/IMPROVEMENTS.md A4).
+//
+// Para emulador local (endpoint setado) e sem credenciais explícitas no
+// ambiente, usa a estática "test/test" apenas como fallback de assinatura —
+// o LocalStack aceita qualquer credential; o SDK exige alguma.
 func NewClient(ctx context.Context, endpoint, region string) (*sqs.Client, error) {
-	cfg, err := awsconfig.LoadDefaultConfig(ctx,
-		awsconfig.WithRegion(region),
-		awsconfig.WithBaseEndpoint(endpoint),
-		awsconfig.WithCredentialsProvider(aws.NewCredentialsCache(
-			credentials.NewStaticCredentialsProvider("test", "test", ""))),
-	)
+	opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(region)}
+	if endpoint != "" {
+		opts = append(opts, awsconfig.WithBaseEndpoint(endpoint))
+		if os.Getenv("AWS_ACCESS_KEY_ID") == "" && os.Getenv("AWS_PROFILE") == "" {
+			opts = append(opts, awsconfig.WithCredentialsProvider(
+				aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider("test", "test", ""))))
+		}
+	}
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("sqs: carregar config: %w", err)
 	}

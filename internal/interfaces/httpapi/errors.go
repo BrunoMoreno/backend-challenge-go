@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/BrunoMoreno/backend-challenge-go/internal/app/openwallet"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/app/processwager"
@@ -56,6 +57,13 @@ func (a *api) failSubmit(w http.ResponseWriter, err error) {
 	case errors.Is(err, processwager.ErrExternalConflict):
 		writeError(w, http.StatusConflict, "EXTERNAL_TRANSACTION_CONFLICT",
 			"mesmo (provider, externalTransactionId) com outra chave")
+	case isDuplicateOf(err, "wager_resolved_reference_uniq"):
+		// Rede de segurança da corrida de reversão: o lock da carteira
+		// serializa a maioria dos casos, mas duas reversões do mesmo alvo em
+		// processadores distintos podem colidir na resolução; a duplicata do
+		// índice vira 422 ALREADY_REVERSED em vez de 500 (M3).
+		writeError(w, http.StatusUnprocessableEntity, "ALREADY_REVERSED",
+			"a operação de referência já foi resolvida")
 	case errors.Is(err, processwager.ErrStaleClaim):
 		// Concorrência transitória entre processadores: o cliente deve repetir.
 		writeUnavailable(w, "outro processador está tratando a operação; repita a requisição")
@@ -69,6 +77,13 @@ func (a *api) failSubmit(w http.ResponseWriter, err error) {
 func writeUnavailable(w http.ResponseWriter, message string) {
 	w.Header().Set("Retry-After", "1")
 	writeError(w, http.StatusServiceUnavailable, "UNAVAILABLE", message)
+}
+
+// isDuplicateOf identifica duplicata de um índice pelo nome do constraint:
+// o mapError do postgres envolve ErrDuplicate com a string do constraint, sem
+// preservar o *pgconn.PgError, então a detecção é por substring (M3).
+func isDuplicateOf(err error, constraint string) bool {
+	return errors.Is(err, postgres.ErrDuplicate) && strings.Contains(err.Error(), constraint)
 }
 
 // failQuery mapeia os erros das consultas.

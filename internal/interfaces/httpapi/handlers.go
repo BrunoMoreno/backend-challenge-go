@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/BrunoMoreno/backend-challenge-go/internal/app/openwallet"
@@ -21,6 +22,8 @@ import (
 const (
 	defaultLedgerLimit = 50
 	maxLedgerLimit     = 200
+	// maxIDLen barra ids/campos livres acima do aceito no schema (VARCHAR).
+	maxIDLen = 400
 	// maxBodyBytes limita o corpo de POST a 1 MiB.
 	maxBodyBytes = 1 << 20
 )
@@ -37,6 +40,9 @@ type Deps struct {
 	Queries QueryService
 	// Ready é o probe de prontidão (PostgreSQL, e SQS a partir do M7).
 	Ready func(ctx context.Context) error
+	// Draining é o flag de desligamento ordenado; enquanto true,
+	// /health/ready responde 503 para o LB parar de rotear (M10).
+	Draining *atomic.Bool
 	// Metrics instrumenta as requisições HTTP; nil desativa.
 	Metrics *metrics.Metrics
 }
@@ -374,6 +380,15 @@ func (a *api) parseSubmit(id Identity, raw rawSubmit, idempotencyKey string) (su
 		strings.TrimSpace(raw.WalletID) == "" {
 		return submitRequest{}, "INVALID_FIELD"
 	}
+	// Normaliza os campos livres e barra valores além dos tamanhos aceitos
+	// pelo schema: dois submits com whitespace diferente ("alice" vs
+	// "alice ") fabricariam chaves de idempotência distintas sem o trim (M4).
+	if len(raw.ProviderID) > maxIDLen || len(raw.ExternalTransactionID) > maxIDLen ||
+		len(raw.PlayerID) > maxIDLen || len(raw.WalletID) > maxIDLen ||
+		len(raw.RoundID) > maxIDLen || len(raw.GameID) > maxIDLen ||
+		len(raw.ReferenceExternalTransactionID) > maxIDLen {
+		return submitRequest{}, "INVALID_FIELD"
+	}
 	kind := wager.Kind(raw.Kind)
 	if kind == wager.KindOpening {
 		return submitRequest{}, "OPENING_NOT_ALLOWED"
@@ -388,15 +403,15 @@ func (a *api) parseSubmit(id Identity, raw rawSubmit, idempotencyKey string) (su
 		return submitRequest{}, code
 	}
 	return submitRequest{
-		ProviderID:                     raw.ProviderID,
-		ExternalTransactionID:          raw.ExternalTransactionID,
-		PlayerID:                       raw.PlayerID,
-		WalletID:                       raw.WalletID,
-		RoundID:                        raw.RoundID,
-		GameID:                         raw.GameID,
+		ProviderID:                     strings.TrimSpace(raw.ProviderID),
+		ExternalTransactionID:          strings.TrimSpace(raw.ExternalTransactionID),
+		PlayerID:                       strings.TrimSpace(raw.PlayerID),
+		WalletID:                       strings.TrimSpace(raw.WalletID),
+		RoundID:                        strings.TrimSpace(raw.RoundID),
+		GameID:                         strings.TrimSpace(raw.GameID),
 		Kind:                           kind,
 		Amount:                         amount,
-		ReferenceExternalTransactionID: raw.ReferenceExternalTransactionID,
+		ReferenceExternalTransactionID: strings.TrimSpace(raw.ReferenceExternalTransactionID),
 		IdempotencyKey:                 idempotencyKey,
 	}, ""
 }

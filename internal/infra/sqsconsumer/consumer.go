@@ -285,7 +285,10 @@ func (c *Consumer) handle(ctx context.Context, msg *types.Message) {
 		c.dead(msgCtx, msg, failure{reason: businessReason(err), detail: err.Error()})
 		return
 	}
-	_ = res
+	// M12: o desfecho do processamento não pode ser descartado — é o dado de
+	// triagem de DLQ/reconciliação (estado + saldo), além do toque de métrica.
+	c.logger.DebugContext(msgCtx, "sqs: transação processada",
+		"transactionId", res.TransactionID, "state", res.State, "failureCode", res.FailureCode)
 
 	if err := uow.InboxRepository.MarkCompleted(processCtx, ConsumerName, env.MessageID); err != nil {
 		c.retry(msgCtx, msg, err)
@@ -356,9 +359,18 @@ func parseRequested(raw json.RawMessage) (processwager.Input, failure) {
 	if strings.TrimSpace(d.IdempotencyKey) == "" {
 		return processwager.Input{}, failure{reason: "MISSING_IDEMPOTENCY_KEY", detail: "idempotencyKey ausente"}
 	}
+	if len(d.IdempotencyKey) > 400 {
+		return processwager.Input{}, failure{reason: "INVALID_FIELD", detail: "idempotencyKey > 400"}
+	}
 	if strings.TrimSpace(d.ProviderID) == "" || strings.TrimSpace(d.ExternalTransactionID) == "" ||
 		strings.TrimSpace(d.PlayerID) == "" || strings.TrimSpace(d.WalletID) == "" {
 		return processwager.Input{}, failure{reason: "INVALID_FIELD", detail: "campo obrigatório ausente"}
+	}
+	if len(d.ProviderID) > 400 || len(d.ExternalTransactionID) > 400 ||
+		len(d.PlayerID) > 400 || len(d.WalletID) > 400 ||
+		len(d.RoundID) > 400 || len(d.GameID) > 400 ||
+		len(d.ReferenceExternalTransactionID) > 400 {
+		return processwager.Input{}, failure{reason: "INVALID_FIELD", detail: "campo acima do limite de 400"}
 	}
 	kind := wager.Kind(d.Kind)
 	if kind == wager.KindOpening {
@@ -373,16 +385,16 @@ func parseRequested(raw json.RawMessage) (processwager.Input, failure) {
 		return processwager.Input{}, failure{reason: "INVALID_MONEY", detail: "money ausente ou moeda inválida"}
 	}
 	return processwager.Input{
-		ProviderID:                     d.ProviderID,
-		ExternalTransactionID:          d.ExternalTransactionID,
-		PlayerID:                       d.PlayerID,
-		WalletID:                       d.WalletID,
-		RoundID:                        d.RoundID,
-		GameID:                         d.GameID,
+		ProviderID:                     strings.TrimSpace(d.ProviderID),
+		ExternalTransactionID:          strings.TrimSpace(d.ExternalTransactionID),
+		PlayerID:                       strings.TrimSpace(d.PlayerID),
+		WalletID:                       strings.TrimSpace(d.WalletID),
+		RoundID:                        strings.TrimSpace(d.RoundID),
+		GameID:                         strings.TrimSpace(d.GameID),
 		Kind:                           kind,
 		Amount:                         d.Money,
-		ReferenceExternalTransactionID: d.ReferenceExternalTransactionID,
-		IdempotencyKey:                 d.IdempotencyKey,
+		ReferenceExternalTransactionID: strings.TrimSpace(d.ReferenceExternalTransactionID),
+		IdempotencyKey:                 strings.TrimSpace(d.IdempotencyKey),
 	}, failure{}
 }
 
@@ -417,6 +429,12 @@ func isRetryable(err error) bool {
 	if errors.Is(err, postgres.ErrSerialization) || errors.Is(err, postgres.ErrDeadlock) {
 		return true
 	}
+	if errors.Is(err, postgres.ErrOptimisticLock) || errors.Is(err, postgres.ErrDuplicate) {
+		// Conflito de versão otimista (RowsAffected==0) e duplicata de índice
+		// em corrida são transitórios: a outra transação termina e o replay da
+		// reentrega resolve (M5). Antes iam direto para a DLQ.
+		return true
+	}
 	if errors.Is(err, postgres.ErrUnexpected) || errors.Is(err, postgres.ErrNotFound) {
 		// Erro inesperado (rede/connection) ou linha sumida em corrida: tenta
 		// de novo dentro do backoff; o redrive automático decide o destino.
@@ -435,14 +453,20 @@ func (c *Consumer) retry(ctx context.Context, msg *types.Message, err error) {
 	c.logger.WarnContext(ctx, "sqs: falha transitória", "error", err, "receiveCount", count)
 
 	if count >= c.cfg.MaxReceiveCount {
+		// M12: o redrive automático para a DLQ não tinha sinal. Este contador
+		// dá visibilidade ao caminho que depende da política da fila.
+		c.cfg.Metrics.SQSMessages("redrive")
 		return
 	}
 	delay := c.backoff(count)
 	c.logger.InfoContext(ctx, "sqs: reentrega agendada", "receiveCount", count, "delay", delay.String())
+	// ceil: delay >= 1s garantido (piso do backoff), mas o arredondamento para
+	// cima impede que qualquer truncamento gere visibilidade 0.
+	visibility := (delay + time.Second - 1) / time.Second
 	_, changeErr := c.api.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
 		QueueUrl:          aws.String(c.cfg.QueueURL),
 		ReceiptHandle:     aws.String(receipt),
-		VisibilityTimeout: int32(delay / time.Second),
+		VisibilityTimeout: int32(visibility),
 	})
 	if changeErr != nil && ctx.Err() == nil {
 		c.logger.WarnContext(ctx, "sqs: falha ao estender visibilidade", "error", changeErr)
@@ -479,6 +503,7 @@ func (c *Consumer) dead(ctx context.Context, msg *types.Message, f failure) {
 	if err != nil {
 		// Não apaga a original: sem DLQ atingível, a mensagem volta na
 		// reentrega e tenta de novo.
+		c.cfg.Metrics.SQSMessages("dlq_failed")
 		c.logger.ErrorContext(ctx, "sqs: falha ao publicar na DLQ", "reason", f.reason, "error", err)
 		return
 	}
@@ -510,30 +535,54 @@ func (c *Consumer) heartbeat(ctx, parent context.Context, receipt string) {
 	for {
 		select {
 		case <-parent.Done():
-			// Shutdown: libera mensagens em voo para reentrega segura.
-			_, _ = c.api.ChangeMessageVisibility(context.Background(), &sqs.ChangeMessageVisibilityInput{
-				QueueUrl:          aws.String(c.cfg.QueueURL),
-				ReceiptHandle:     aws.String(receipt),
-				VisibilityTimeout: 0,
-			})
+			// Shutdown: libera mensagens em voo para reentrega segura. O call
+			// com timeout curto evita travar o dreno em broker pendurado (M1).
+			if err := c.changeVisibility(receipt, 0); err != nil {
+				c.logger.Warn("sqs: falha ao liberar visibilidade no shutdown", "error", err)
+			}
 			return
 		case <-ctx.Done():
 			// Processamento concluído normalmente; o retry/delete já agiu.
 			return
 		case <-ticker.C:
-			if _, err := c.api.ChangeMessageVisibility(context.Background(), &sqs.ChangeMessageVisibilityInput{
-				QueueUrl:          aws.String(c.cfg.QueueURL),
-				ReceiptHandle:     aws.String(receipt),
-				VisibilityTimeout: int32(c.cfg.VisibilityTimeout / time.Second),
-			}); err != nil {
+			if err := c.changeVisibility(receipt, int32(c.cfg.VisibilityTimeout/time.Second)); err != nil {
 				c.logger.Warn("sqs: heartbeat falhou", "error", err)
 			}
 		}
 	}
 }
 
+// changeVisibility chama o SQS com deadline próprio. Sem isso o retryer do SDK
+// pode segurar uma chamada por minutos contra um broker pendurado, travando o
+// shutdown (o dreno aguarda o heartbeat terminar) e deixando estourar a
+// visibilidade no meio do processamento.
+func (c *Consumer) changeVisibility(receipt string, timeout int32) error {
+	callCtx, cancel := context.WithTimeout(context.Background(), c.changeVisibilityTimeout())
+	defer cancel()
+	_, err := c.api.ChangeMessageVisibility(callCtx, &sqs.ChangeMessageVisibilityInput{
+		QueueUrl:          aws.String(c.cfg.QueueURL),
+		ReceiptHandle:     aws.String(receipt),
+		VisibilityTimeout: timeout,
+	})
+	return err
+}
+
+// changeVisibilityTimeout limita o heartbeat a uma fração segura do intervalo.
+func (c *Consumer) changeVisibilityTimeout() time.Duration {
+	t := c.cfg.VisibilityTimeout / 2
+	if t > 5*time.Second {
+		t = 5 * time.Second
+	}
+	if t < time.Second {
+		t = time.Second
+	}
+	return t
+}
+
 // backoff calcula o atraso exponencial (base * 2^(count-1)) com jitter de 30%,
-// limitado ao teto.
+// limitado ao teto. O resultado tem PISO de 1s: uma reentrega com visibilidade 0
+// faria a mensagem voltar a cada ciclo, inflando ApproximateReceiveCount e
+// movendo uma falha transitória para a DLQ antes da hora (docs/solve/IMPROVEMENTS.md A2).
 func (c *Consumer) backoff(count int) time.Duration {
 	delay := c.cfg.BackoffBase
 	for i := 1; i < count; i++ {
@@ -551,8 +600,8 @@ func (c *Consumer) backoff(count int) time.Duration {
 		maxJitter = time.Second
 	}
 	delay -= c.jitter(maxJitter)
-	if delay < 0 {
-		delay = 0
+	if delay < time.Second {
+		return time.Second
 	}
 	return delay
 }

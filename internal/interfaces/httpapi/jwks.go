@@ -22,6 +22,15 @@ const leeway = 30 * time.Second
 // jwksTTL é o tempo em que as chaves públicas em cache são consideradas frescas.
 const jwksTTL = 10 * time.Minute
 
+// initBackoff é o intervalo mínimo entre tentativas do JWKS inicial após a
+// primeira falha: o Keycloak fora do ar não pode virar um GET por request.
+const initBackoff = 5 * time.Second
+
+// missingKeyRefreshGrace rate-limita o refresh disparado por um kid
+// desconhecido com o cache fresco: sem isso, cada token de um kid inventado
+// geraria um GET no Keycloak (DoS, M9).
+const missingKeyRefreshGrace = 5 * time.Second
+
 // JWKSVerifier valida JWTs RS256 (Keycloak) contra um JWKS, checando assinatura,
 // `iss`, `aud` e `exp`, e extrai `provider_id` e as roles de realm.
 type JWKSVerifier struct {
@@ -33,10 +42,19 @@ type JWKSVerifier struct {
 	lazy     bool
 
 	mu        sync.RWMutex
-	initOnce  sync.Once
-	initErr   error
 	keys      map[string]*rsa.PublicKey
 	fetchedAt time.Time
+
+	// initMu serializa a primeira carga (lazy); a falha NÃO é memoizada — a
+	// próxima requisição retenta, respeitando initRetryAfter.
+	initMu          sync.Mutex
+	initialized     bool
+	nextInitAttempt time.Time
+	initRetryAfter  time.Duration
+
+	// unknownMu protege o throttle de refresh por kid desconhecido.
+	unknownMu          sync.Mutex
+	lastUnknownRefresh time.Time
 }
 
 // NewJWKSVerifier busca o JWKS inicial; falha se a fonte estiver inacessível.
@@ -65,11 +83,12 @@ func NewLazyJWKSVerifier(issuer, jwksURL, audience string) (*JWKSVerifier, error
 
 func newJWKSVerifier(issuer, jwksURL, audience string) *JWKSVerifier {
 	return &JWKSVerifier{
-		issuer:   issuer,
-		audience: audience,
-		jwksURL:  jwksURL,
-		client:   &http.Client{Timeout: 5 * time.Second},
-		ttl:      jwksTTL,
+		issuer:         issuer,
+		audience:       audience,
+		jwksURL:        jwksURL,
+		client:         &http.Client{Timeout: 5 * time.Second},
+		ttl:            jwksTTL,
+		initRetryAfter: initBackoff,
 	}
 }
 
@@ -160,11 +179,25 @@ func (v *JWKSVerifier) verifySignature(ctx context.Context, key *rsa.PublicKey, 
 	return nil
 }
 
-// ensureKeys carrega o JWKS uma única vez na conjugação lazily; falha aberta
-// → ErrUnauthenticated. Sempre verifica antes de servir a primeira requisição.
+// ensureKeys carrega o JWKS na conjugação lazily; falha aberta →
+// ErrUnauthenticated. A falha inicial NÃO é memoizada: a próxima requisição
+// retenta (respeitando o backoff para não martelar um Keycloak fora do ar), de
+// modo que a recuperação da fonte não exige restart.
 func (v *JWKSVerifier) ensureKeys(ctx context.Context) error {
-	v.initOnce.Do(func() { v.initErr = v.refresh(ctx) })
-	return v.initErr
+	v.initMu.Lock()
+	defer v.initMu.Unlock()
+	if v.initialized {
+		return nil
+	}
+	if time.Now().Before(v.nextInitAttempt) {
+		return ErrUnauthenticated
+	}
+	if err := v.refresh(ctx); err != nil {
+		v.nextInitAttempt = time.Now().Add(v.initRetryAfter)
+		return err
+	}
+	v.initialized = true
+	return nil
 }
 
 // publicKey devolve a chave do `kid`, atualizando o cache quando necessário.
@@ -172,6 +205,12 @@ func (v *JWKSVerifier) publicKey(ctx context.Context, kid string) (*rsa.PublicKe
 	key, cached := v.lookup(kid)
 	if cached && v.fresh() {
 		return key, nil
+	}
+	// M9: kid desconhecido com cache fresco é normalmente rejeição (ou rotação
+	// há instantes); sem o throttle cada token forjado bateria no Keycloak.
+	// Cache vencido continua fazendo refresh sempre (rotação + recuperação).
+	if !cached && v.fresh() && !v.unknownRefreshAllowed() {
+		return nil, ErrUnauthenticated
 	}
 	if err := v.refresh(ctx); err != nil {
 		if cached { // JWKS indisponível: serve a chave em cache
@@ -183,6 +222,19 @@ func (v *JWKSVerifier) publicKey(ctx context.Context, kid string) (*rsa.PublicKe
 		return key, nil
 	}
 	return nil, ErrUnauthenticated
+}
+
+// unknownRefreshAllowed concede o refresh por kid desconhecido de tempo em
+// tempo (missingKeyRefreshGrace) — rotação adiciona o kid NOVO ao JWKS e o
+// primeiro token com ele precisa de um refresh para ser aceito.
+func (v *JWKSVerifier) unknownRefreshAllowed() bool {
+	v.unknownMu.Lock()
+	defer v.unknownMu.Unlock()
+	if time.Since(v.lastUnknownRefresh) < missingKeyRefreshGrace {
+		return false
+	}
+	v.lastUnknownRefresh = time.Now()
+	return true
 }
 
 // lookup consulta as chaves em cache; JWKS sem `kid` aceita a única chave.

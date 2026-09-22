@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/fx"
@@ -53,6 +54,7 @@ func Module() fx.Option {
 			query.NewService,
 			provideVerifier,
 			provideReady,
+			provideDraining,
 			provideHTTPDeps,
 			httpapi.NewServerWithDeps,
 			metrics.New,
@@ -87,24 +89,46 @@ func provideVerifier(cfg config.Config) (httpapi.Verifier, error) {
 	return httpapi.NewLazyJWKSVerifier(cfg.KeycloakIssuer, cfg.KeycloakJWKSURL, cfg.KeycloakAudience)
 }
 
-// provideReady é o probe de prontidão: ping no PostgreSQL e, quando o papel
-// sqs-consumer está ativo, verificação de que a fila de entrada existe.
+// provideReady é o probe de prontidão: ping no PostgreSQL e verificação das
+// filas de cada papel SQS ativo (inbox p/ sqs-consumer, eventos p/
+// outbox-publisher). Um papel montado sem a fila correspondente (ou com o
+// broker fora) responde /ready 503 — antes o outbox-publisher podia ficar
+// "verde" com o envio morto (M2).
 func provideReady(cfg config.Config, pool *pgxpool.Pool) func(context.Context) error {
 	base := func(ctx context.Context) error {
 		if err := pool.Ping(ctx); err != nil {
 			return err
 		}
-		if !cfg.RolesSQSConsumer() {
-			return nil
+		if cfg.RolesSQSConsumer() {
+			if err := sqsQueueReachable(ctx, cfg.SQSEndpoint, cfg.SQSRegion, cfg.SQSConsumerQueueURL); err != nil {
+				return err
+			}
 		}
-		client, err := sqs.NewClient(ctx, cfg.SQSEndpoint, cfg.SQSRegion)
-		if err != nil {
-			return err
+		if cfg.RolesOutboxPublisher() {
+			if err := sqsQueueReachable(ctx, cfg.SQSEndpoint, cfg.SQSRegion, cfg.OutboxEventsQueueURL); err != nil {
+				return err
+			}
 		}
-		_, err = client.GetQueueUrl(ctx, &awssqs.GetQueueUrlInput{QueueName: aws.String(queueNameFromURL(cfg.SQSConsumerQueueURL))})
-		return err
+		return nil
 	}
 	return base
+}
+
+// sqsQueueReachable confirma que a fila existe no broker configurado.
+func sqsQueueReachable(ctx context.Context, endpoint, region, queueURL string) error {
+	client, err := sqs.NewClient(ctx, endpoint, region)
+	if err != nil {
+		return err
+	}
+	_, err = client.GetQueueUrl(ctx, &awssqs.GetQueueUrlInput{QueueName: aws.String(queueNameFromURL(queueURL))})
+	return err
+}
+
+// provideDraining é o flag de desligamento ordenado: setado no início do OnStop
+// do servidor HTTP e lido por /health/ready (503) para o LB parar de rotear
+// antes do listener fechar (M10).
+func provideDraining() *atomic.Bool {
+	return new(atomic.Bool)
 }
 
 // queueNameFromURL extrai o nome da fila da URL do LocalStack/AWS.
@@ -117,29 +141,32 @@ func queueNameFromURL(url string) string {
 
 // provideHTTPDeps constrói as dependências das rotas de negócio.
 func provideHTTPDeps(v httpapi.Verifier, w *openwallet.Service, pw *processwager.Service,
-	q *query.Service, ready func(context.Context) error, m *metrics.Metrics) httpapi.Deps {
-	return httpapi.Deps{Verifier: v, Wallets: w, Wagers: pw, Queries: q, Ready: ready, Metrics: m}
+	q *query.Service, ready func(context.Context) error, draining *atomic.Bool,
+	m *metrics.Metrics) httpapi.Deps {
+	return httpapi.Deps{Verifier: v, Wallets: w, Wagers: pw, Queries: q,
+		Ready: ready, Draining: draining, Metrics: m}
 }
 
 // runOutboxPublisher inicia o worker de publicação da outbox quando o papel
 // outbox-publisher está ativo. O envio usa a fila wager-events.fifo; a
 // disputa entre instâncias é resolvida pelo lease + SKIP LOCKED no banco.
+// Um erro ao montar o sender ABORTA o boot (fx) — antes o papel começava
+// silenciosamente morto com /ready verde (M2).
 func runOutboxPublisher(
 	lc fx.Lifecycle,
 	cfg config.Config,
 	factory *postgres.UnitOfWorkFactory,
 	logger *slog.Logger,
 	metricsBox *metrics.Metrics,
-) {
+) error {
 	if !cfg.RolesOutboxPublisher() {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	sender, err := sqs.NewSender(ctx, cfg.SQSEndpoint, cfg.SQSRegion, cfg.OutboxEventsQueueURL)
 	if err != nil {
-		logger.Error("outbox: falha ao criar sender SQS", "error", err)
-		return
+		return fmt.Errorf("outbox: criar sender SQS: %w", err)
 	}
 
 	pub := outboxpublisher.New(factory, sender, logger, outboxpublisher.Config{
@@ -181,6 +208,7 @@ func runOutboxPublisher(
 			}
 		},
 	})
+	return nil
 }
 
 // runSQSConsumer inicia o consumidor da fila de entrada quando o papel
@@ -195,16 +223,15 @@ func runSQSConsumer(
 	factory *postgres.UnitOfWorkFactory,
 	logger *slog.Logger,
 	metricsBox *metrics.Metrics,
-) {
+) error {
 	if !cfg.RolesSQSConsumer() {
-		return
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	client, err := sqs.NewClient(ctx, cfg.SQSEndpoint, cfg.SQSRegion)
 	if err != nil {
-		logger.Error("sqs: falha ao criar cliente", "error", err)
-		return
+		return fmt.Errorf("sqs: criar cliente: %w", err)
 	}
 
 	consumer := sqsconsumer.New(client, service, factory, logger, sqsconsumer.Config{
@@ -245,6 +272,7 @@ func runSQSConsumer(
 			}
 		},
 	})
+	return nil
 }
 
 // runReferenceWorker inicia o worker de resolução tardia de referências quando
@@ -307,6 +335,7 @@ func serveHTTP(
 	cfg config.Config,
 	logger *slog.Logger,
 	srv *http.Server,
+	draining *atomic.Bool,
 ) {
 	if !cfg.RolesHTTP() {
 		return
@@ -328,8 +357,13 @@ func serveHTTP(
 			return nil
 		},
 		OnStop: func(ctx context.Context) error {
-			logger.Info("http: desligando servidor")
-			return srv.Shutdown(ctx)
+			// M10: marca o draining ANTES de fechar o listener — o LB para de
+			// rotear (ready 503) enquanto o drenagem encerra os processamentos.
+			logger.Info("http: desligando servidor (draining)")
+			draining.Store(true)
+			err := srv.Shutdown(ctx)
+			draining.Store(false)
+			return err
 		},
 	})
 }
@@ -346,6 +380,9 @@ func runMetricsServer(
 		Addr:              cfg.MetricsAddr,
 		Handler:           m.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 	lc.Append(fx.Hook{
 		OnStart: func(context.Context) error {
