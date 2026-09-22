@@ -328,6 +328,26 @@ func TestAuth_MalformedBearerHeader(t *testing.T) {
 	}
 }
 
+// TestAuth_PublicRoutesDoNotRequireToken verifica que endpoints operacionais
+// e de documentação permanecem acessíveis sem autenticação.
+func TestAuth_PublicRoutesDoNotRequireToken(t *testing.T) {
+	base, _ := authTestApp(t)
+
+	for _, path := range []string{
+		"/health/live",
+		"/health/ready",
+		"/openapi.yaml",
+		"/swagger/",
+	} {
+		t.Run(path, func(t *testing.T) {
+			r := authDo(t, http.MethodGet, base+path, "", "", nil)
+			if r.StatusCode != http.StatusOK {
+				t.Fatalf("GET %s = %d, want 200 (body: %s)", path, r.StatusCode, r.Body)
+			}
+		})
+	}
+}
+
 // TestAuth_WrongIssuerToken verifica 401 com um token que apesar de JWT válido
 // contém issuer errado (emitido por outro realm / string inventada). Usa um
 // token de um client real mas substituímos 1 char do payload para corromper
@@ -408,6 +428,31 @@ func TestAuth_ProviderTriesGetWallet(t *testing.T) {
 		t.Fatalf("status = %d, want 403 (body: %s)", r.StatusCode, r.Body)
 	}
 	assertAuthErrorCode(t, r, "FORBIDDEN")
+}
+
+// TestAuth_InternalCanUseWalletRoutes verifica o caminho autorizado para a
+// role wallet:internal, incluindo leitura, ledger e reconciliação.
+func TestAuth_InternalCanUseWalletRoutes(t *testing.T) {
+	base, _ := authTestApp(t)
+	intToken := kcInternal(t)
+	walletID := openWalletAuth(t, base, intToken, unique("player-internal"), "25.00")
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "wallet", method: http.MethodGet, path: "/wallets/" + walletID},
+		{name: "ledger", method: http.MethodGet, path: "/wallets/" + walletID + "/ledger"},
+		{name: "reconciliation", method: http.MethodPost, path: "/wallets/" + walletID + "/reconciliation"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := authDo(t, tc.method, base+tc.path, intToken, "", nil)
+			if r.StatusCode != http.StatusOK {
+				t.Fatalf("%s %s = %d, want 200 (body: %s)", tc.method, tc.path, r.StatusCode, r.Body)
+			}
+		})
+	}
 }
 
 // ---- Tarefa 5: CanSubmitAsProvider — provider-a envia como provider-b ----
