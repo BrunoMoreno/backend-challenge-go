@@ -439,10 +439,13 @@ func (c *Consumer) retry(ctx context.Context, msg *types.Message, err error) {
 	}
 	delay := c.backoff(count)
 	c.logger.InfoContext(ctx, "sqs: reentrega agendada", "receiveCount", count, "delay", delay.String())
+	// ceil: delay >= 1s garantido (piso do backoff), mas o arredondamento para
+	// cima impede que qualquer truncamento gere visibilidade 0.
+	visibility := (delay + time.Second - 1) / time.Second
 	_, changeErr := c.api.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
 		QueueUrl:          aws.String(c.cfg.QueueURL),
 		ReceiptHandle:     aws.String(receipt),
-		VisibilityTimeout: int32(delay / time.Second),
+		VisibilityTimeout: int32(visibility),
 	})
 	if changeErr != nil && ctx.Err() == nil {
 		c.logger.WarnContext(ctx, "sqs: falha ao estender visibilidade", "error", changeErr)
@@ -533,7 +536,9 @@ func (c *Consumer) heartbeat(ctx, parent context.Context, receipt string) {
 }
 
 // backoff calcula o atraso exponencial (base * 2^(count-1)) com jitter de 30%,
-// limitado ao teto.
+// limitado ao teto. O resultado tem PISO de 1s: uma reentrega com visibilidade 0
+// faria a mensagem voltar a cada ciclo, inflando ApproximateReceiveCount e
+// movendo uma falha transitória para a DLQ antes da hora (docs/solve/IMPROVEMENTS.md A2).
 func (c *Consumer) backoff(count int) time.Duration {
 	delay := c.cfg.BackoffBase
 	for i := 1; i < count; i++ {
@@ -551,8 +556,8 @@ func (c *Consumer) backoff(count int) time.Duration {
 		maxJitter = time.Second
 	}
 	delay -= c.jitter(maxJitter)
-	if delay < 0 {
-		delay = 0
+	if delay < time.Second {
+		return time.Second
 	}
 	return delay
 }

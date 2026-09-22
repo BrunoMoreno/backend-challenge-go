@@ -87,12 +87,17 @@ func (r *OutboxRepository) MarkPublished(ctx context.Context, eventID string) er
 }
 
 // MarkFailed registra falha de publicação (backoff exponencial no worker).
+// A guarda `published_at IS NULL` impede que um publisher com lease vencido
+// (late mark de um ciclo anterior) "regrida" um evento já publicado por outra
+// instância, mexendo em attempts/next_attempt_at (docs/solve/IMPROVEMENTS.md A3).
+// Nesse caso MarkFailed devolve ErrNotFound (o publisher trata como "já
+// finalizado por outro").
 func (r *OutboxRepository) MarkFailed(ctx context.Context, eventID string, next time.Time) error {
 	tag, err := r.tx.Exec(ctx,
 		`UPDATE outbox_events
 		    SET attempts = attempts + 1, next_attempt_at = $2, locked_until = NULL
-		  WHERE event_id = $1`,
-		eventID)
+		  WHERE event_id = $1 AND published_at IS NULL`,
+		eventID, next)
 	if err != nil {
 		return mapError(err)
 	}

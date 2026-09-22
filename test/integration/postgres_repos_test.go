@@ -452,6 +452,60 @@ func TestOutboxClaimAndPublish(t *testing.T) {
 	_ = uow.Rollback(ctx)
 }
 
+// TestOutboxLateMarkFailedDoesNotRegressPublished é o A3: um publisher com
+// lease vencido marcando falha de evento já publicado não pode regredir o
+// estado — MarkFailed devolve ErrNotFound e os campos ficam intactos.
+func TestOutboxLateMarkFailedDoesNotRegressPublished(t *testing.T) {
+	ctx := context.Background()
+	f := newTestUoW(t)
+
+	uow := beginOK(t, f)
+	env := mustValue(events.NewWalletBalanceChanged(unique("evt-late"), unique("corr-late"), "",
+		events.WalletBalanceChangedData{
+			WalletID: unique("wal-late"), TransactionID: unique("tx-late"), Direction: "CREDIT",
+			Money: mm(t, "1.00", "BRL"), BalanceBefore: mm(t, "0.00", "BRL"),
+			BalanceAfter: mm(t, "1.00", "BRL"), WalletVersion: 1,
+		}))
+	if err := uow.OutboxRepository.Insert(ctx, env); err != nil {
+		t.Fatalf("insert outbox: %v", err)
+	}
+	if _, err := uow.OutboxRepository.ClaimPending(ctx, 100, time.Minute); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := uow.OutboxRepository.MarkPublished(ctx, env.EventID); err != nil {
+		t.Fatalf("mark published: %v", err)
+	}
+	if err := uow.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	uow = beginOK(t, f)
+	if err := uow.OutboxRepository.MarkFailed(ctx, env.EventID, time.Now().Add(time.Hour)); !errors.Is(err, postgres.ErrNotFound) {
+		_ = uow.Rollback(ctx)
+		t.Fatalf("MarkFailed em evento publicado error = %v, want ErrNotFound", err)
+	}
+	if err := uow.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Estado inalterado: sigue publicado, sem tentativas acumuladas e sem
+	// novo next_attempt_at (o late mark não regrediu nada).
+	pool := newTestPool(t, testURL())
+	var attempts int
+	var next *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT attempts, next_attempt_at FROM outbox_events WHERE event_id = $1`, env.EventID).
+		Scan(&attempts, &next); err != nil {
+		t.Fatalf("consultar outbox: %v", err)
+	}
+	if attempts != 0 {
+		t.Fatalf("attempts = %d, want 0 (late mark não deveria acumular)", attempts)
+	}
+	if next != nil {
+		t.Fatalf("next_attempt_at = %v, want NULL (evento já publicado)", next)
+	}
+}
+
 func TestUoWAllOrNothing(t *testing.T) {
 	ctx := context.Background()
 	f := newTestUoW(t)

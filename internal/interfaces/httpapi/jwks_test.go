@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -146,6 +147,46 @@ func TestJWKSVerifierRefreshesRotatedKey(t *testing.T) {
 	server.rotate(testKid, &second.PublicKey)
 	if _, err := v.Verify(context.Background(), signRS256(t, second, testKid, validClaims(testAudience))); err != nil {
 		t.Fatalf("Verify() após rotação error = %v (esperava refresh do JWKS)", err)
+	}
+}
+
+// TestJWKSVerifierLazyRecoversAfterInitialFailure garante que a falha inicial
+// do JWKS (Keycloak fora do ar) não é memoizada: sem restart, a recuperação da
+// fonte volta a autenticar. Também prova o backoff — a fonte não é martelada a
+// cada request durante a indisponibilidade.
+func TestJWKSVerifierLazyRecoversAfterInitialFailure(t *testing.T) {
+	key := mustRSAKey(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 { // só a primeira chamada falha
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		writeJWKS(w, testKid, &key.PublicKey)
+	}))
+	t.Cleanup(srv.Close)
+
+	v, err := NewLazyJWKSVerifier(testIssuer, srv.URL, testAudience)
+	if err != nil {
+		t.Fatalf("NewLazyJWKSVerifier() error = %v", err)
+	}
+	v.initRetryAfter = 5 * time.Millisecond
+
+	token := signRS256(t, key, testKid, validClaims(testAudience))
+
+	if _, err := v.Verify(context.Background(), token); err != ErrUnauthenticated {
+		t.Fatalf("Verify() com o JWKS fora do ar error = %v, want ErrUnauthenticated", err)
+	}
+	if _, err := v.Verify(context.Background(), token); err != ErrUnauthenticated {
+		t.Fatalf("Verify() dentro da janela de backoff error = %v, want ErrUnauthenticated", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("chamadas ao JWKS durante indisponibilidade = %d, want 1 (backoff deveria conter o GET por request)", got)
+	}
+
+	time.Sleep(6 * time.Millisecond) // backoff expirado
+	if _, err := v.Verify(context.Background(), token); err != nil {
+		t.Fatalf("Verify() após o Keycloak voltar error = %v, want nil (recuperação sem restart)", err)
 	}
 }
 
