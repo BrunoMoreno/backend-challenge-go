@@ -82,21 +82,3 @@ make logs          # logs em streaming
 make migrate-down  # reverte a última migration
 ```
 
-## Status de implementação
-
-**M0–M9 completos** — status detalhado (fase a fase, com pendências e bloqueios) em
-[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md).
-
-Resumo: domínio puro (Money, ledger, máquina de estados), PostgreSQL (ledger append-only com
-constraint-trigger deferida no commit, inbox/outbox, roles), casos de uso com idempotência
-persistente, HTTP+Keycloak (JWT/JWKS), outbox com lease `FOR UPDATE SKIP LOCKED`, consumidor SQS
-com inbox transacional/retry/DLQ e **harness multi-instância determinístico** (`test/e2e`, build
-tag `faultinject`) cobrindo disputa, duplicatas, crash pós-commit e conferência final. Suíte verde
-e determinística com `-race -count=1`; build/vet/gofmt limpos. Juntamente com 3 bugs corrigidos em
-`internal/infra/postgres/ledger.go` (500 no `GET /wallets/{id}/ledger`).
-
-Convenção de commits `ADD`/`TEST`/`FIX`/`DOC`; progresso e pendências (4.7, 9.5) em
-`docs/CONTEXT.md`; revisão de código em `CODE_REVIEW.md`.
-
-Principais variáveis de ambiente em `.env.example`; filas provisionadas por `deploy/localstack/init/queues.sh`
-e detalhes de contrato em `docs/MESSAGING.md`. Matriz de autorização, rotas e códigos de erro em `docs/API.md`.
