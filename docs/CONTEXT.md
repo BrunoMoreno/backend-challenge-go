@@ -70,7 +70,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 - [x] 4.4 `ADD` mapeamento de erros → `docs/API.md` (inclui 503)
 - [x] 4.5 `ADD` reconciliação (snapshot `REPEATABLE READ`)
 - [x] 4.6 `ADD` health live/ready
-- [x] 4.7 `TEST` auth real e isolamento entre provedores (consulta e replay), sem efeito colateral em 401/403
+- [ ] 4.7 `TEST` auth real e isolamento entre provedores (consulta e replay), sem efeito colateral em 401/403
 
 ### M5 — Outbox (G4, RF-07)
 - [x] 5.1 `ADD` publisher com lease, `SKIP LOCKED`, backoff
@@ -147,7 +147,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 - **Suíte de integração endurecida (diagnóstico de `docs/solve/TEST-INTEGRATION.md`):** corrigidas as três falhas apontadas — (1) `noEvent` fazia `sleep` fixo + `ReceiveMessage` de long-poll que podia amostrar **após** a expiração do lease (2 s) e acusar "durante o lease" uma publicação legítima do novo dono; agora faz polling estrito com long-poll zero e deadline que nunca ultrapassa o fim do lease; (2) pools de teste sem teto explícito saturavam o `max_connections=100` do Compose (com 50 chamadas concorrentes + app residente); agora todo pool da suíte usa `MaxConns=8` via `newTestPool`; (3) consumidor SQS tinha `stop()` sem `defer` — uma `t.Fatalf` no meio fechava o pool com o goroutine vivo (erro "closed pool" vazando entre testes); agora `runConsumer` registra `t.Cleanup(stop)` idempotente imediatamente após o start. Suíte `-tags=integration -race -count=1` **verde** (54s; teste do lease 5/5), unit e vet limpos.
 - Durante a validação de clone, corrigida uma última corrida real de readiness: `serveHTTP` no `OnStart` usava `go ListenAndServe()` e retornava antes de o listener existir → `TestBootstrapStartStop` pegava `connection refused` aleatório. Agora o listener é ligado **sincronamente** via `net.Listen` dentro do `OnStart` (`FIX: http: ligar o listener sincronamente no OnStart — readiness real (RF-11)`, `a69822d`); métricas seguem o mesmo padrão.
 - **Bloco anterior da suíte de integração esclarecido:** as falhas de `TestBootstrapStartStop` (0.03s/connection refused) e outbox (`53300`) vistas no meio da validação vinham de um **worktree desatualizado** (clone de estado intermediário, antes do `FIX` `a69822d`), e não do estado commitado — no HEAD atual tudo verde.
-- Pendências **fora do corte** (não bloqueiam entrega): 9.5 (indisponibilidade temporária).
+- Pendências **fora do corte** (não bloqueiam entrega): 4.7 (auth/keycloak integração real de isolamento) e 9.5 (indisponibilidade temporária).
 - Última tarefa concluída: L1–L7 (prioridade baixa de `IMPROVEMENTS.md`)
 - Próxima tarefa: revisão/merge dos PRs de prioridade média (#16) e baixa, e atualizar status do `README.md`/docs se mudar comportamento de deploy
 - Bloqueios: —
