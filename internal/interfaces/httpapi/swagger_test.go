@@ -35,6 +35,17 @@ func TestOpenAPIAndSwaggerUIArePublic(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), "SwaggerUIBundle") || !strings.Contains(rec.Body.String(), "/openapi.yaml") {
 			t.Fatal("página Swagger UI não aponta para a especificação")
 		}
+		const nonceMarker = "'nonce-"
+		csp := rec.Header().Get("Content-Security-Policy")
+		nonceStart := strings.Index(csp, nonceMarker)
+		if nonceStart < 0 {
+			t.Fatal("CSP não contém nonce para o script de inicialização")
+		}
+		nonceStart += len(nonceMarker)
+		nonceEnd := strings.Index(csp[nonceStart:], "'")
+		if nonceEnd < 0 || !strings.Contains(rec.Body.String(), `nonce="`+csp[nonceStart:nonceStart+nonceEnd]+`"`) {
+			t.Fatal("nonce da CSP não está aplicado ao script de inicialização")
+		}
 	})
 
 	t.Run("canonical slash", func(t *testing.T) {

@@ -1,7 +1,10 @@
 package httpapi
 
 import (
+	"crypto/rand"
 	_ "embed"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 )
 
@@ -27,9 +30,15 @@ func handleSwaggerUI(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/swagger/", http.StatusMovedPermanently)
 		return
 	}
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		http.Error(w, "unable to initialize Swagger UI", http.StatusInternalServerError)
+		return
+	}
+	nonce := hex.EncodeToString(nonceBytes)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline' https://unpkg.com; script-src 'self' https://unpkg.com; img-src 'self' data: https://unpkg.com")
-	_, _ = w.Write([]byte(swaggerUIHTML))
+	w.Header().Set("Content-Security-Policy", fmt.Sprintf("default-src 'self'; style-src 'self' 'unsafe-inline' https://unpkg.com; script-src 'self' https://unpkg.com 'nonce-%s'; img-src 'self' data: https://unpkg.com", nonce))
+	_, _ = fmt.Fprintf(w, swaggerUIHTML, nonce)
 }
 
 const swaggerUIHTML = `<!doctype html>
@@ -43,7 +52,7 @@ const swaggerUIHTML = `<!doctype html>
 <body>
   <div id="swagger-ui"></div>
   <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
-  <script>
+  <script nonce="%s">
     window.ui = SwaggerUIBundle({
       url: '/openapi.yaml',
       dom_id: '#swagger-ui',
