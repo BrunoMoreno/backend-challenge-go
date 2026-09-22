@@ -43,4 +43,5 @@ make kc-token CLIENT=provider-a          # ou:
 KEYCLOAK_URL=https://... ./deploy/keycloak/token.sh wagering-internal
 ```
 
-O script imprime apenas o `access_token` no stdout (via `jq`).
+O script imprime apenas o `access_token` no stdout. Ele usa `jq` quando disponível
+e recorre ao `python3` da biblioteca padrão como fallback.
