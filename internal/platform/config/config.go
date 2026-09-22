@@ -27,7 +27,10 @@ type Config struct {
 	KeycloakIssuer string
 	// KeycloakJWKSURL é a URL do JWKS usado para validar a assinatura dos tokens.
 	KeycloakJWKSURL string
-	// KeycloakAudience é o `aud` esperado nos tokens de negócio (clientId do resource server).
+	// KeycloakAudience é o `aud` esperado nos tokens de negócio. É lido da
+	// env APP_KEYCLOAK_CLIENT_ID — o clientId do resource server (`wager-api`)
+	// que os tokens devem conter em `aud`. A API é um resource server e nunca
+	// se autentica no Keycloak; ver docs/AUTHENTICATION.md §2.2.
 	KeycloakAudience string
 	// LogLevel é o nível do logger: debug, info, warn ou error.
 	LogLevel string
