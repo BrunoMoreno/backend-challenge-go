@@ -67,15 +67,32 @@ var runID = "itest-" + os.Getenv("GO_TEST_SERIAL")
 
 func unique(id string) string { return runID + "-" + id }
 
-func newTestUoW(t *testing.T) *postgres.UnitOfWorkFactory {
+// testPoolMaxConns limita as conexões de cada pool de teste: a suíte abre
+// muitos pools simultâneos e o PostgreSQL do Compose opera com
+// max_connections=100. Um pool sem teto explícito contribui com até NumCPU
+// conexões e, somado ao app residente/TablePlus/execuções paralelas, satura o
+// banco — novos BEGIN passam a ser recusados (docs/solve/TEST-INTEGRATION.md).
+const testPoolMaxConns = 8
+
+// newTestPool abre um pool pgx com MaxConns fixado e o fecha ao fim do teste.
+func newTestPool(t *testing.T, dsn string) *pgxpool.Pool {
 	t.Helper()
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, testURL())
+	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
+		t.Fatalf("pgxpool.ParseConfig: %v", err)
+	}
+	cfg.MaxConns = testPoolMaxConns
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("pgxpool.NewWithConfig: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	return postgres.NewUnitOfWorkFactory(pool)
+	return pool
+}
+
+func newTestUoW(t *testing.T) *postgres.UnitOfWorkFactory {
+	t.Helper()
+	return postgres.NewUnitOfWorkFactory(newTestPool(t, testURL()))
 }
 
 // beginOK abre uma transação e garante rollback no fim (mesmo em falha),

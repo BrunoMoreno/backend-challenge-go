@@ -86,10 +86,18 @@ func testLogger(t *testing.T) *slog.Logger {
 // (ou "" quando vazia) e a remove para o teste não vazar.
 func receiveEvent(t *testing.T, client *awssqs.Client, queueURL string) string {
 	t.Helper()
+	return receiveEventPoll(t, client, queueURL, 1)
+}
+
+// receiveEventPoll é o núcleo de receiveEvent com long-poll configurável: 0s
+// deixa o ReceiveMessage retornar imediato (usado por noEvent, onde uma leitura
+// não pode ultrapassar o fim do lease).
+func receiveEventPoll(t *testing.T, client *awssqs.Client, queueURL string, waitSeconds int32) string {
+	t.Helper()
 	out, err := client.ReceiveMessage(context.Background(), &awssqs.ReceiveMessageInput{
 		QueueUrl:            aws.String(queueURL),
 		MaxNumberOfMessages: 1,
-		WaitTimeSeconds:     1,
+		WaitTimeSeconds:     waitSeconds,
 	})
 	if err != nil {
 		t.Fatalf("receive: %v", err)
@@ -164,14 +172,26 @@ func waitEvent(t *testing.T, client *awssqs.Client, queueURL, want string, timeo
 	t.Fatalf("evento %s não publicado em %v", want, timeout)
 }
 
-// noEvent espera um intervalo e falha se o evento alvo chegar na fila (o
-// lease ativo impede a publicação; outras mensagens — publicadas por outras
-// instâncias/shared infra — são consumidas e descartadas).
+// noEvent espera um intervalo e falha se o evento alvo chegar na fila DENTRO
+// da janela (`wait` — o lease ativo). O polling é estrito: cada ReceiveMessage
+// usa long-poll zero (retorno imediato) e o deadline total nunca ultrapassa
+// `wait`. Um sleep fixo seguido de uma leitura com long-poll pode amostrar o
+// evento APÓS a expiração do lease — a publicação legítima do novo dono viraria
+// um "durante o lease" indevido. Outras mensagens (publicadas por instâncias
+// externas/shared infra) são consumidas e descartadas.
 func noEvent(t *testing.T, client *awssqs.Client, queueURL, eventID string, wait time.Duration) {
 	t.Helper()
-	time.Sleep(wait)
-	if got := receiveEvent(t, client, queueURL); got == eventID {
-		t.Fatalf("evento %s publicado durante o lease", eventID)
+	deadline := time.Now().Add(wait)
+	const poll = 50 * time.Millisecond
+	for time.Now().Before(deadline) {
+		if got := receiveEventPoll(t, client, queueURL, 0); got == eventID {
+			t.Fatalf("evento %s publicado durante o lease", eventID)
+		}
+		if rem := time.Until(deadline); rem > poll {
+			time.Sleep(poll)
+		} else {
+			time.Sleep(rem)
+		}
 	}
 }
 

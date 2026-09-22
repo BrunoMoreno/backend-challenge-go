@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -132,8 +133,13 @@ func startConsumer(t *testing.T, f *postgres.UnitOfWorkFactory) *sqsconsumer.Con
 	})
 }
 
-// runConsumer executa o consumidor em background até o cancelamento.
-func runConsumer(t *testing.T, c *sqsconsumer.Consumer) (cancelAndWait func()) {
+// runConsumer executa o consumidor em background até o cancelamento. O stop é
+// registrado como t.Cleanup IMEDIATAMENTE após o start: se o teste falhar antes
+// de chamá-lo explicitamente, o goroutine é encerrado antes de o t.Cleanup do
+// pool fechar as conexões — sem isso uma t.Fatalf fecharia o pool com o
+// consumidor ainda lendo (docs/solve/TEST-INTEGRATION.md). O stop é idempotente
+// (sync.Once), então a chamada explícita + cleanup não bloqueia o segundo.
+func runConsumer(t *testing.T, c *sqsconsumer.Consumer) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -141,14 +147,19 @@ func runConsumer(t *testing.T, c *sqsconsumer.Consumer) (cancelAndWait func()) {
 		defer close(done)
 		_ = c.Run(ctx)
 	}()
-	return func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-			t.Fatal("consumidor não encerrou após cancelamento")
-		}
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("consumidor não encerrou após cancelamento")
+			}
+		})
 	}
+	t.Cleanup(stop)
+	return stop
 }
 
 // waitInboxCompleted espera a inbox do consumidor concluir a mensagem.
