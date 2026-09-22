@@ -26,6 +26,7 @@ import (
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/money"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/domain/wager"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/infra/postgres"
+	"github.com/BrunoMoreno/backend-challenge-go/internal/platform/backoff"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/platform/logging"
 	"github.com/BrunoMoreno/backend-challenge-go/internal/platform/metrics"
 )
@@ -579,31 +580,13 @@ func (c *Consumer) changeVisibilityTimeout() time.Duration {
 	return t
 }
 
-// backoff calcula o atraso exponencial (base * 2^(count-1)) com jitter de 30%,
-// limitado ao teto. O resultado tem PISO de 1s: uma reentrega com visibilidade 0
-// faria a mensagem voltar a cada ciclo, inflando ApproximateReceiveCount e
-// movendo uma falha transitória para a DLQ antes da hora (docs/solve/IMPROVEMENTS.md A2).
+// backoff calcula o atraso exponencial (base * 2^(count-1)) com jitter de 30%.
+// Implementação única no pacote compartilhado `platform/backoff` (L1), com o
+// piso de 1s exigido pelo SQS: uma reentrega com visibilidade 0 faria a
+// mensagem voltar a cada ciclo, inflando ApproximateReceiveCount e movendo uma
+// falha transitória para a DLQ antes da hora (docs/solve/IMPROVEMENTS.md A2).
 func (c *Consumer) backoff(count int) time.Duration {
-	delay := c.cfg.BackoffBase
-	for i := 1; i < count; i++ {
-		if delay >= c.cfg.BackoffMax {
-			break
-		}
-		delay *= 2
-		if delay > c.cfg.BackoffMax {
-			delay = c.cfg.BackoffMax
-			break
-		}
-	}
-	maxJitter := delay * 30 / 100
-	if maxJitter < time.Second {
-		maxJitter = time.Second
-	}
-	delay -= c.jitter(maxJitter)
-	if delay < time.Second {
-		return time.Second
-	}
-	return delay
+	return backoff.Delay(count-1, c.cfg.BackoffBase, c.cfg.BackoffMax, c.jitter, time.Second)
 }
 
 func (c *Consumer) sleep(ctx context.Context, d time.Duration) {

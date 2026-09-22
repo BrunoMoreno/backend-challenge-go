@@ -53,7 +53,7 @@ func New(factory *postgres.UnitOfWorkFactory, sender Sender, logger *slog.Logger
 		cfg.BatchSize = 10
 	}
 	if cfg.PollInterval <= 0 {
-		cfg.PollInterval = 500 * time.Millisecond
+		cfg.PollInterval = time.Second // default alinhado à config (L2)
 	}
 	if cfg.Lease <= 0 {
 		cfg.Lease = 30 * time.Second

@@ -3,7 +3,7 @@ DATABASE_URL ?= postgres://app:app@localhost:5432/wagering?sslmode=disable
 MIGRATE_IMAGE ?= migrate/migrate:v4.18.1
 
 .PHONY: up down logs ps clean
-.PHONY: build test test-race test-integration test-e2e vet fmt tidy
+.PHONY: build test test-race test-integration test-e2e vet lint fmt coverage tidy
 .PHONY: migrate-up migrate-down migrate-create
 .PHONY: kc-token
 
@@ -31,19 +31,27 @@ test:
 	$(GO) test ./...
 
 test-race:
-	$(GO) test -race ./...
+	$(GO) test -race -count=1 ./...
 
 test-integration:
-	$(GO) test -tags=integration -race ./test/integration/...
+	$(GO) test -tags=integration -race -count=1 ./test/integration/...
 
 test-e2e:
-	$(GO) test -tags='integration faultinject' -race ./test/e2e/...
+	$(GO) test -tags='integration faultinject' -race -count=1 ./test/e2e/...
 
 vet:
 	$(GO) vet ./...
 
 fmt:
 	@out="$$(gofmt -l .)"; if [ -n "$$out" ]; then echo "Arquivos fora do padrão:"; echo "$$out"; exit 1; else echo "gofmt ok"; fi
+
+lint:
+	@command -v staticcheck >/dev/null 2>&1 || (echo "staticcheck não instalado (go install honnef.co/go/tools/cmd/staticcheck@latest)"; exit 1)
+	staticcheck ./...
+
+coverage:
+	$(GO) test -coverprofile=/tmp/coverage.out ./...
+	@$(GO) tool cover -func=/tmp/coverage.out | tail -1
 
 tidy:
 	$(GO) mod tidy

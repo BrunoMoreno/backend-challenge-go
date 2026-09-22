@@ -128,20 +128,6 @@ func (r *OutboxRepository) GetEvent(ctx context.Context, eventID string) (events
 	return env, nil
 }
 
-func nullable(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
-
-func deref(p *string) string {
-	if p == nil {
-		return ""
-	}
-	return *p
-}
-
 func marshalPayload(env events.Envelope) ([]byte, error) {
 	return env.Data, nil
 }

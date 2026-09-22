@@ -7,9 +7,9 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"testing"
 	"time"
 
@@ -18,19 +18,25 @@ import (
 	"go.uber.org/fx"
 )
 
-const (
-	bootstrapHTTPPort   = ":18080"
-	bootstrapMetrics    = ":19090"
-	bootstrapHTTPURL    = "http://localhost:18080"
-	bootstrapMetricsURL = "http://localhost:19090"
-)
+// freePort reserva uma porta efêmera do SO e a devolve — evita colisão de
+// :18080/:19090 quando duas suítes rodam no mesmo host (L7).
+func freePort(t *testing.T) (addr, url string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserva de porta: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	return fmt.Sprintf(":%d", port), fmt.Sprintf("http://localhost:%d", port)
+}
 
 // bootstrapTestConfig monta a configuração para o módulo Fx apontando para a
-// infraestrutura local do Compose. As portas de teste não são usadas por nada.
-func bootstrapTestConfig() config.Config {
+// infraestrutura local do Compose.
+func bootstrapTestConfig(httpAddr, metricsAddr string) config.Config {
 	return config.Config{
 		AppRoles:               []string{"http", "sqs-consumer", "outbox-publisher"},
-		HTTPAddr:               bootstrapHTTPPort,
+		HTTPAddr:               httpAddr,
 		DatabaseURL:            testURL(),
 		SQSEndpoint:            sqsEndpoint,
 		SQSRegion:              "us-east-1",
@@ -52,15 +58,17 @@ func bootstrapTestConfig() config.Config {
 		SQSConsumerConcurrency: 2,
 		SQSConsumerBackoffBase: time.Second,
 		SQSConsumerBackoffMax:  time.Minute,
-		MetricsAddr:            bootstrapMetrics,
+		MetricsAddr:            metricsAddr,
 		ShutdownTimeout:        10 * time.Second,
 	}
 }
 
 // TestBootstrapValidateApp valida o grafo Fx completo sem iniciar os workers.
 func TestBootstrapValidateApp(t *testing.T) {
-	os.Setenv("APP_ROLES", "http,sqs-consumer,outbox-publisher")
-	if err := fx.ValidateApp(bootstrap.Module(), fx.Replace(bootstrapTestConfig()), fx.NopLogger); err != nil {
+	t.Setenv("APP_ROLES", "http,sqs-consumer,outbox-publisher")
+	httpAddr, _ := freePort(t)
+	metricsAddr, _ := freePort(t)
+	if err := fx.ValidateApp(bootstrap.Module(), fx.Replace(bootstrapTestConfig(httpAddr, metricsAddr)), fx.NopLogger); err != nil {
 		t.Fatalf("ValidateApp: %v", err)
 	}
 }
@@ -69,8 +77,10 @@ func TestBootstrapValidateApp(t *testing.T) {
 // respondem; no Stop os recursos são liberados (portas devolvidas e um novo
 // app no mesmo endereço sobe) e os workers param dentro do prazo.
 func TestBootstrapStartStop(t *testing.T) {
-	os.Setenv("APP_ROLES", "http,sqs-consumer,outbox-publisher")
-	cfg := bootstrapTestConfig()
+	t.Setenv("APP_ROLES", "http,sqs-consumer,outbox-publisher")
+	httpAddr, httpURL := freePort(t)
+	metricsAddr, metricsURL := freePort(t)
+	cfg := bootstrapTestConfig(httpAddr, metricsAddr)
 	newApp := func() *fx.App {
 		return fx.New(bootstrap.Module(), fx.Replace(cfg), fx.NopLogger)
 	}
@@ -81,10 +91,10 @@ func TestBootstrapStartStop(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	if code := httpGetCode(t, bootstrapHTTPURL+"/health/live"); code != http.StatusOK {
+	if code := httpGetCode(t, httpURL+"/health/live"); code != http.StatusOK {
 		t.Fatalf("health/live = %d, want 200", code)
 	}
-	if code := httpGetCode(t, bootstrapMetricsURL+"/metrics"); code != http.StatusOK {
+	if code := httpGetCode(t, metricsURL+"/metrics"); code != http.StatusOK {
 		t.Fatalf("/metrics = %d, want 200", code)
 	}
 
@@ -92,15 +102,15 @@ func TestBootstrapStartStop(t *testing.T) {
 		t.Fatalf("stop: %v", err)
 	}
 
-	expectPortFree(t, bootstrapHTTPPort)
-	expectPortFree(t, bootstrapMetrics)
+	expectPortFree(t, httpAddr)
+	expectPortFree(t, metricsAddr)
 
 	// Novo app no mesmo endereço: as portas foram realmente liberadas.
 	app2 := newApp()
 	if err := app2.Start(ctx); err != nil {
 		t.Fatalf("segundo start: %v", err)
 	}
-	if code := httpGetCode(t, bootstrapHTTPURL+"/health/live"); code != http.StatusOK {
+	if code := httpGetCode(t, httpURL+"/health/live"); code != http.StatusOK {
 		t.Fatalf("health/live (2º app) = %d, want 200", code)
 	}
 	if err := app2.Stop(ctx); err != nil {

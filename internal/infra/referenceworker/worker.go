@@ -49,7 +49,7 @@ func New(factory *postgres.UnitOfWorkFactory, service *processwager.Service, log
 		cfg.BatchSize = 10
 	}
 	if cfg.PollInterval <= 0 {
-		cfg.PollInterval = 500 * time.Millisecond
+		cfg.PollInterval = time.Second // default alinhado à config (L2)
 	}
 	if cfg.MaxAttempts < 1 {
 		cfg.MaxAttempts = 30

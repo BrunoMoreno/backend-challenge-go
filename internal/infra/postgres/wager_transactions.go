@@ -104,12 +104,12 @@ func (r *WagerTransactionRepository) Insert(ctx context.Context, t wager.WagerTr
 		    external_transaction_id, idempotency_key, payload_hash, resolved_reference_id,
 		    result_balance_minor, attempt, next_attempt_at, created_at, updated_at)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
-		t.ID(), t.Origin(), t.Kind(), t.State(), nilString(string(t.FailureCode())),
-		t.WalletID(), t.PlayerID(), zeroable(t.RoundID()), zeroable(t.GameID()),
+		t.ID(), t.Origin(), t.Kind(), t.State(), nullable(string(t.FailureCode())),
+		t.WalletID(), t.PlayerID(), nullable(t.RoundID()), nullable(t.GameID()),
 		t.Amount().Currency(), t.Amount().Minor(),
-		zeroable(t.ReferenceExternalTransactionID()), zeroable(t.ProviderID()),
-		zeroable(t.ExternalTransactionID()), zeroable(t.IdempotencyKey()),
-		zeroable(t.PayloadHash()), zeroable(t.ResolvedReferenceTransactionID()),
+		nullable(t.ReferenceExternalTransactionID()), nullable(t.ProviderID()),
+		nullable(t.ExternalTransactionID()), nullable(t.IdempotencyKey()),
+		nullable(t.PayloadHash()), nullable(t.ResolvedReferenceTransactionID()),
 		zeroableMinor(t.ResultBalance()), t.Attempts(), timeOrNil(t.NextAttemptAt()),
 		t.CreatedAt(), t.UpdatedAt())
 	return mapError(err)
@@ -127,12 +127,12 @@ func (r *WagerTransactionRepository) InsertIfAbsent(ctx context.Context, t wager
 		    result_balance_minor, attempt, next_attempt_at, created_at, updated_at)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
 		 ON CONFLICT (idempotency_key) DO NOTHING`,
-		t.ID(), t.Origin(), t.Kind(), t.State(), nilString(string(t.FailureCode())),
-		t.WalletID(), t.PlayerID(), zeroable(t.RoundID()), zeroable(t.GameID()),
+		t.ID(), t.Origin(), t.Kind(), t.State(), nullable(string(t.FailureCode())),
+		t.WalletID(), t.PlayerID(), nullable(t.RoundID()), nullable(t.GameID()),
 		t.Amount().Currency(), t.Amount().Minor(),
-		zeroable(t.ReferenceExternalTransactionID()), zeroable(t.ProviderID()),
-		zeroable(t.ExternalTransactionID()), zeroable(t.IdempotencyKey()),
-		zeroable(t.PayloadHash()), zeroable(t.ResolvedReferenceTransactionID()),
+		nullable(t.ReferenceExternalTransactionID()), nullable(t.ProviderID()),
+		nullable(t.ExternalTransactionID()), nullable(t.IdempotencyKey()),
+		nullable(t.PayloadHash()), nullable(t.ResolvedReferenceTransactionID()),
 		zeroableMinor(t.ResultBalance()), t.Attempts(), timeOrNil(t.NextAttemptAt()),
 		t.CreatedAt(), t.UpdatedAt())
 	if err != nil {
@@ -150,8 +150,8 @@ func (r *WagerTransactionRepository) UpdateTerminal(ctx context.Context, t wager
 		   SET state = $2, failure_code = $3, resolved_reference_id = $4,
 		       result_balance_minor = $5, updated_at = $6
 		 WHERE id = $1 AND state IN ('PENDING','PENDING_REFERENCE')`,
-		t.ID(), t.State(), nilString(string(t.FailureCode())),
-		zeroable(t.ResolvedReferenceTransactionID()),
+		t.ID(), t.State(), nullable(string(t.FailureCode())),
+		nullable(t.ResolvedReferenceTransactionID()),
 		zeroableMinor(t.ResultBalance()), t.UpdatedAt())
 	if err != nil {
 		return mapError(err)
@@ -258,14 +258,8 @@ func (r *WagerTransactionRepository) FindPendingDue(ctx context.Context, now tim
 	return out, mapError(rows.Err())
 }
 
-// Helpers de conversão.
-func zeroable(v string) *string {
-	if v == "" {
-		return nil
-	}
-	return &v
-}
-
+// Helpers de conversão. Os compartilhados (nullable/deref/timeOrNil) vivem em
+// scan.go (L2); aqui fica o específico do resultado monetário.
 func zeroableMinor(m money.Money) *int64 {
 	// Resultado ausente (ex.: OPENING ainda em PENDING) → NULL.
 	if m.Currency() == "" {
@@ -273,18 +267,4 @@ func zeroableMinor(m money.Money) *int64 {
 	}
 	v := m.Minor()
 	return &v
-}
-
-func nilString(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
-
-func timeOrNil(t time.Time) *time.Time {
-	if t.IsZero() {
-		return nil
-	}
-	return &t
 }

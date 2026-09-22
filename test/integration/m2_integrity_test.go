@@ -308,7 +308,7 @@ func TestSchemaMigrationsAtLatest(t *testing.T) {
 		`SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1`).Scan(&version); err != nil {
 		t.Fatalf("schema_migrations: %v", err)
 	}
-	const wantVersion = 9 // 000009 (outbox index, M11) é a migração mais recente
+	const wantVersion = 10 // 000010 (wager_pending_due_idx, L3) é a migração mais recente
 	if version != wantVersion {
 		t.Fatalf("migrations no banco = %d, want %d (make migrate-up)", version, wantVersion)
 	}
