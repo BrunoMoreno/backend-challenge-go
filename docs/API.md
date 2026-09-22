@@ -1,6 +1,8 @@
 # API HTTP
 
 > Contrato externo da API. Decisões internas em `ARCHITECTURE.md`; mensageria em `docs/MESSAGING.md`.
+> Autenticação/autorização detalhada (modelo OIDC, claims, validação e isolamento de
+> provedores) em `docs/AUTHENTICATION.md`.
 
 ## 1. Convenções
 
@@ -24,6 +26,9 @@
 | `GET /health/live`, `GET /health/ready` | públicas |
 
 Acessos negados (401/403/404) não produzem efeito financeiro nem expõem dados.
+
+> O modelo OIDC, os clients do realm `wagering`, as claims esperadas e os 3 mecanismos
+> de isolamento entre provedores estão explicados em `docs/AUTHENTICATION.md`.
 
 ## 3. Endpoints
 
@@ -90,4 +95,45 @@ Replay de `PENDING_REFERENCE` devolve 202 com o estado atual; se já mudou para 
 
 ## 6. Exemplos (`curl`)
 
-_(preencher no M10 com token via `client_credentials` do Keycloak)_
+Tokens via `client_credentials` do Keycloak (`deploy/keycloak/token.sh` ou `make kc-token`):
+
+```sh
+TOKEN=$(make kc-token CLIENT=provider-a)          # provedor de jogos
+INT=$(make kc-token CLIENT=wagering-internal)     # serviço interno
+API=http://localhost:8080
+```
+
+Abrir carteira (rolha `wallet:internal`):
+
+```sh
+curl -s $API/wallets -H "Authorization: Bearer $INT" -H 'Content-Type: application/json' \
+  -d '{"playerId":"p-100","initialBalance":{"amount":"100.00","currency":"BRL"}}'
+# 201 {"id":"47...","playerId":"p-100","balance":{"amount":"100.00","currency":"BRL"},"version":2}
+```
+
+Enviar `BET` com `Idempotency-Key` (rolha `wagering:provider`; `providerId` = identidade):
+
+```sh
+WALLET_ID=<id da resposta acima>
+curl -s -X POST $API/wagering/transactions \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: bet-001' \
+  -d "{\"providerId\":\"provider-a\",\"externalTransactionId\":\"bet-001\",\"playerId\":\"p-100\",\
+       \"walletId\":\"$WALLET_ID\",\"roundId\":\"r-1\",\"gameId\":\"g-1\",\
+       \"kind\":\"BET\",\"amount\":{\"amount\":\"25.00\",\"currency\":\"BRL\"}}"
+# 201 {"transactionId":"...","status":"PROCESSED","balance":{"amount":"75.00","currency":"BRL"},"idempotentReplay":false}
+```
+
+Replay da mesma chave → 200 com `idempotentReplay:true` (sem novo débito). Consultas:
+
+```sh
+curl -s $API/wallets/$WALLET_ID -H "Authorization: Bearer $INT"
+curl -s "$API/wallets/$WALLET_ID/ledger?limit=50" -H "Authorization: Bearer $INT"
+curl -s $API/wagering/transactions/<transactionId> -H "Authorization: Bearer $TOKEN"
+curl -s $API/providers/provider-a/wagering/transactions/bet-001 -H "Authorization: Bearer $TOKEN"
+curl -s -X POST $API/wallets/$WALLET_ID/reconciliation -H "Authorization: Bearer $INT"
+```
+
+Sem token → `401 UNAUTHENTICATED`; `providerId` ≠ identidade → `403 FORBIDDEN`;
+transação de outro provedor por ID → `404 TRANSACTION_NOT_FOUND`. Health e docs:
+`GET /health/live`, `GET /health/ready`, `GET /openapi.yaml` (públicos).

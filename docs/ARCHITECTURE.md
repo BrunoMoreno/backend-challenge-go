@@ -1,6 +1,6 @@
 # ARCHITECTURE
 
-> **Este documento define o como.** Entregável do desafio (marco M10), mantido em dia com a implementação. Requisitos em `PRD.md`; contratos externos em `docs/API.md` e `docs/MESSAGING.md`; estratégia de testes em `docs/TESTING.md`.
+> **Este documento define o como.** Entregável do desafio (marco M10), mantido em dia com a implementação. Requisitos em `PRD.md`; contratos externos em `docs/API.md` e `docs/MESSAGING.md`; estratégia de testes em `docs/TESTING.md`; guia de autenticação em `docs/AUTHENTICATION.md`.
 
 ## 1. Dinheiro (`Money`) — atende G1
 

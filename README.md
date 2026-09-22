@@ -6,7 +6,8 @@ ledger append-only, idempotência persistente, inbox/outbox e autenticação OID
 Correto com múltiplas instâncias e falhas entre etapas.
 
 > Documentação: `docs/` contém `PRD.md` (requisitos), `ARCHITECTURE.md` (decisões),
-> `API.md` (contrato HTTP), `MESSAGING.md` (filas) e `TESTING.md` (testes). O plano de
+> `API.md` (contrato HTTP), `AUTHENTICATION.md` (guia de autenticação/autorização),
+> `MESSAGING.md` (filas) e `TESTING.md` (testes). O plano de
 > execução e o progresso estão em `docs/CONTEXT.md`.
 
 ## Stack
@@ -43,17 +44,11 @@ make kc-token CLIENT=provider-a   # access token OIDC de um provedor de teste
 > `wallet:internal`; clients `provider-a`, `provider-b`, `wagering-internal` e
 > `wager-api`). `make kc-token CLIENT=<client>` emite um token de teste por
 > `client_credentials`. A API valida `Bearer` JWT via JWKS (assinatura RS256,
-> `iss`, `aud`, `exp`) e aplica a matriz de `docs/API.md` §2. Detalhes em
-> `deploy/keycloak/README.md` e `docs/API.md`.
+> `iss`, `aud`, `exp`) e aplica a matriz de `docs/API.md` §2. O modelo OIDC, as
+> claims, a validação passo a passo e o isolamento entre provedores estão em
+> `docs/AUTHENTICATION.md`; detalhes do realm em `deploy/keycloak/README.md`.
 
 ## Testes
-
-## Documentação da API
-
-Com o serviço em execução, a especificação OpenAPI está em
-`http://localhost:8080/openapi.yaml` e a interface Swagger UI em
-`http://localhost:8080/swagger/`. A UI carrega seus assets do CDN oficial do
-Swagger; a especificação segue acessível para importação mesmo sem internet.
 
 ```sh
 make test          # go test ./...
@@ -73,6 +68,13 @@ make vet && make fmt
 > O `TestMain` já purga as filas, recria a fila do cenário de crash, mata
 > órfãos de execuções abortadas e zera as tabelas no início da suíte.
 > Use `-count=1` nas suítes e2e/integração para não reutilizar cache.
+
+## Documentação da API
+
+Com o serviço em execução, a especificação OpenAPI está em
+`http://localhost:8080/openapi.yaml` e a interface Swagger UI em
+`http://localhost:8080/swagger/`. A UI carrega seus assets do CDN oficial do
+Swagger; a especificação segue acessível para importação mesmo sem internet.
 
 ## Comandos úteis
 

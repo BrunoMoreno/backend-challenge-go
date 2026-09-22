@@ -9,6 +9,7 @@
 | `PRD.md` | **O quê**: requisitos (RF), garantias (G), eliminatórios, avaliação, entregáveis |
 | `ARCHITECTURE.md` | **Como**: decisões técnicas e interpretações (entregável do desafio) |
 | `docs/API.md` | Contrato HTTP, matriz de autorização, códigos de erro/rejeição |
+| `docs/AUTHENTICATION.md` | Guia de autenticação/autorização: modelo OIDC, claims, validação, matriz, isolamento, passo a passo |
 | `docs/MESSAGING.md` | Filas SQS, envelope, retry/DLQ, eventos de saída |
 | `docs/TESTING.md` | Estratégia de testes, harness, mapa requisito → teste |
 | `CONTEXT.md` (este) | **Quando**: ordem de execução, convenções, progresso |
@@ -128,6 +129,19 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída. Entre parênt
 
 ## 6. Status atual
 
+- **Revisão de autenticação (branch `docs/authentication-guide`):** criado
+  `docs/AUTHENTICATION.md` documentando o modelo OIDC (resource server), os clients
+  do realm `wagering`, as claims esperadas, a validação passo a passo
+  (`Authenticate`→`JWKSVerifier`→`RequireRoles`→regras de provedor), a matriz de
+  autorização e os 3 mecanismos de isolamento entre provedores (`CanSubmitAsProvider`,
+  `RequireProviderPath` e o 404 pós-consulta). Corrigido bug de deploy no
+  `docker-compose.yml`: `APP_KEYCLOAK_ISSUER` apontava para o DNS interno
+  (`http://keycloak:8080`), que **nunca** coincide com o `iss` dos tokens emitidos via
+  `localhost:8081` (`start-dev` deriva o issuer da URL frontal) → 401 em toda rota de
+  negócio no Compose; agora usa `http://localhost:8081/realms/wagering` (JWKS continua
+  interno). Preenchidos os exemplos `curl` ausentes em `docs/API.md` §6, consolidado o
+  guia em `deploy/keycloak/README.md` e corrigida a seção `## Testes` do `README.md`
+  (estava vazia, com os comandos de teste deslocados para "Documentação da API").
 - **Prioridade média da análise resolvida (PR #16, branch `fix/medium-priority-improvements`, merge `08e8489`):** heartbeat do consumidor com timeout (`M1`, sai do dreno morto); roles abortam o boot em falha de setup e a readiness confere a fila de eventos do outbox (`M2`); reversão concorrente vira 422 `ALREADY_REVERSED` pelo constraint `wager_resolved_reference_uniq` (`M3`); campos livres normalizados/limitados no HTTP e SQS (`M4`); `isRetryable` inclui lock otimista/duplicata (`M5`); pool com `statement_timeout`/`lock_timeout`/`idle_in_transaction_session_timeout` (`M6`); lease da outbox garantido ≥ BatchSize×SendTimeout (`M7`); timeouts completos no HTTP e métricas (`M8`); JWKS com throttle de refresh por kid desconhecido (`M9`); `/ready` sem vazar detalhe interno + flag `draining` no desligamento (`M10`); índice `000009` servindo o sort do claim da outbox (`M11`); resultado do processamento logado + métricas `redrive`/`dlq_failed` (`M12`). Docs de detalhe em `docs/solve/ATTACK-MEDIUM.md` e status em `docs/solve/IMPROVEMENTS.md`.
 - **Prioridade baixa da análise concluída (branch `fix/low-priority-improvements`):** L1–L7 de `docs/solve/IMPROVEMENTS.md` implementados e validados (detalhes em `docs/solve/ATTACK-LOW.md`) — backoff unificado no pacote compartilhado com wrapper `Next` (L1); helpers SQL consolidados em `internal/infra/postgres/scan.go` e defaults de `PollInterval` dos workers alinhados a 1s (L2); migração `000010` com índice `wager_pending_due_idx (next_attempt_at NULLS FIRST) WHERE state IN ('PENDING','PENDING_REFERENCE')` casando o sort do worker (L3); `config.Load` fail-explícito (parse de número inválido = erro) + exigências por papel (`APP_DATABASE_URL` sempre; filas para `sqs-consumer`/`outbox-publisher`) com 4 testes novos (L4); `.env.example` regenerado do struct e `APP_KEYCLOAK_CLIENT_SECRET` morto removido (L5); CI GitHub Actions + alvo `make lint` (staticcheck) e `coverage`, `-count=1` nos alvos de teste (L6); units de heartbeat/visibility do consumidor SQS com fake da `messageAPI`, `os.Setenv`→`t.Setenv` e portas efêmeras no bootstrap de integração, `_ = context.Background()` morto removido e métricas `redrive`/`dlq_failed` cobertas (L7). Suíte `-race -count=1` verde.
 - **Suíte de integração endurecida (diagnóstico de `docs/solve/TEST-INTEGRATION.md`):** corrigidas as três falhas apontadas — (1) `noEvent` fazia `sleep` fixo + `ReceiveMessage` de long-poll que podia amostrar **após** a expiração do lease (2 s) e acusar "durante o lease" uma publicação legítima do novo dono; agora faz polling estrito com long-poll zero e deadline que nunca ultrapassa o fim do lease; (2) pools de teste sem teto explícito saturavam o `max_connections=100` do Compose (com 50 chamadas concorrentes + app residente); agora todo pool da suíte usa `MaxConns=8` via `newTestPool`; (3) consumidor SQS tinha `stop()` sem `defer` — uma `t.Fatalf` no meio fechava o pool com o goroutine vivo (erro "closed pool" vazando entre testes); agora `runConsumer` registra `t.Cleanup(stop)` idempotente imediatamente após o start. Suíte `-tags=integration -race -count=1` **verde** (54s; teste do lease 5/5), unit e vet limpos.
