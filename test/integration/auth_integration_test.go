@@ -389,7 +389,7 @@ func TestAuth_ProviderTriesPostWallets(t *testing.T) {
 	tok := kcProviderA(t)
 
 	r := authDo(t, "POST", base+"/wallets", tok, "", map[string]any{
-		"playerId": "p-wallet-1",
+		"playerId":       "p-wallet-1",
 		"initialBalance": map[string]any{"amount": "100.00", "currency": "BRL"},
 	})
 	if r.StatusCode != http.StatusForbidden {
@@ -547,7 +547,7 @@ func TestAuth_ReplayIdempotent(t *testing.T) {
 		t.Fatalf("1ª bet = %d %s", r1.StatusCode, r1.Body)
 	}
 	var res1 struct {
-		IdempotentReplay bool   `json:"idempotentReplay"`
+		IdempotentReplay bool                     `json:"idempotentReplay"`
 		Balance          *struct{ Amount string } `json:"balance"`
 	}
 	if err := json.Unmarshal(r1.Body, &res1); err != nil {
@@ -564,7 +564,7 @@ func TestAuth_ReplayIdempotent(t *testing.T) {
 		t.Fatalf("2ª bet (replay) = %d %s", r2.StatusCode, r2.Body)
 	}
 	var res2 struct {
-		IdempotentReplay bool   `json:"idempotentReplay"`
+		IdempotentReplay bool                     `json:"idempotentReplay"`
 		Balance          *struct{ Amount string } `json:"balance"`
 	}
 	if err := json.Unmarshal(r2.Body, &res2); err != nil {
