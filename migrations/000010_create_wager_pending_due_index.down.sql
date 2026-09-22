@@ -1,0 +1,1 @@
+DROP INDEX wager_pending_due_idx;

@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -14,6 +13,8 @@ func TestCollectorsEmit(t *testing.T) {
 	m.HTTPObserve("POST", "/wagering/transactions", 429, 5*time.Millisecond)
 	m.SQSMessages("processed")
 	m.SQSMessages("dead")
+	m.SQSMessages("redrive")
+	m.SQSMessages("dlq_failed")
 	m.OutboxEvents("published")
 	m.ReferenceResolutions("resolved")
 	m.ReferenceResolutions("expired")
@@ -26,6 +27,8 @@ func TestCollectorsEmit(t *testing.T) {
 		`http_requests_total{method="GET",route="/wallets/{walletId}",status="200"} 1`,
 		`http_requests_total{method="POST",route="/wagering/transactions",status="429"} 1`,
 		`sqs_messages_total{status="dead"} 1`,
+		`sqs_messages_total{status="redrive"} 1`,
+		`sqs_messages_total{status="dlq_failed"} 1`,
 		`outbox_events_total{status="published"} 1`,
 		`reference_resolutions_total{status="resolved"} 1`,
 		`reference_resolutions_total{status="expired"} 1`,
@@ -49,5 +52,4 @@ func TestNilSafety(t *testing.T) {
 	if rec.Code != 404 {
 		t.Fatalf("Handler nil = %d, want 404", rec.Code)
 	}
-	_ = context.Background
 }

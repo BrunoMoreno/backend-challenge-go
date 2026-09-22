@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -84,8 +85,29 @@ type Config struct {
 	ShutdownTimeout time.Duration
 }
 
-// Load lê as variáveis de ambiente e devolve a configuração.
+// Load lê as variáveis de ambiente e devolve a configuração. Parse de números
+// inválidos é erro (não vira default silencioso) e o necessário por papel é
+// exigido — config errônea falha na inicialização, não no meio do tráfego
+// (docs/solve/IMPROVEMENTS.md L4).
 func Load() (Config, error) {
+	var errs []error
+	mustInt := func(key string, def int, dst *int) {
+		v, err := envOrInt(key, def)
+		if err != nil {
+			errs = append(errs, err)
+			return
+		}
+		*dst = v
+	}
+	mustDur := func(key string, def time.Duration, dst *time.Duration) {
+		v, err := envOrDur(key, def)
+		if err != nil {
+			errs = append(errs, err)
+			return
+		}
+		*dst = v
+	}
+
 	cfg := Config{
 		AppRoles:                    splitCSV(os.Getenv("APP_ROLES")),
 		HTTPAddr:                    envOr("APP_HTTP_ADDR", ":8080"),
@@ -97,27 +119,43 @@ func Load() (Config, error) {
 		KeycloakAudience:            os.Getenv("APP_KEYCLOAK_CLIENT_ID"),
 		LogLevel:                    envOr("APP_LOG_LEVEL", "info"),
 		OutboxEventsQueueURL:        os.Getenv("APP_SQS_EVENTS_QUEUE_URL"),
-		OutboxBatchSize:             envOrInt("APP_OUTBOX_BATCH_SIZE", 10),
-		OutboxPollInterval:          envOrDur("APP_OUTBOX_POLL_INTERVAL", time.Second),
-		OutboxLease:                 envOrDur("APP_OUTBOX_LEASE", 30*time.Second),
-		OutboxSendTimeout:           envOrDur("APP_OUTBOX_SEND_TIMEOUT", 10*time.Second),
-		OutboxBackoffBase:           envOrDur("APP_OUTBOX_BACKOFF_BASE", time.Second),
-		OutboxBackoffMax:            envOrDur("APP_OUTBOX_BACKOFF_MAX", 15*time.Minute),
 		SQSConsumerQueueURL:         os.Getenv("APP_SQS_QUEUE_URL"),
 		SQSConsumerDLQURL:           os.Getenv("APP_SQS_DLQ_URL"),
-		SQSMaxReceiveCount:          envOrInt("APP_SQS_MAX_RECEIVE_COUNT", 5),
-		SQSVisibilityTimeout:        envOrDur("APP_SQS_VISIBILITY_TIMEOUT", 30*time.Second),
-		SQSConsumerConcurrency:      envOrInt("APP_SQS_CONSUMER_CONCURRENCY", 4),
-		SQSConsumerBackoffBase:      envOrDur("APP_SQS_CONSUMER_BACKOFF_BASE", time.Second),
-		SQSConsumerBackoffMax:       envOrDur("APP_SQS_CONSUMER_BACKOFF_MAX", 15*time.Minute),
-		ReferenceWorkerBatchSize:    envOrInt("APP_REFERENCE_WORKER_BATCH_SIZE", 10),
-		ReferenceWorkerPollInterval: envOrDur("APP_REFERENCE_WORKER_POLL_INTERVAL", time.Second),
-		ReferenceWorkerMaxAttempts:  envOrInt("APP_REFERENCE_WORKER_MAX_ATTEMPTS", 30),
-		ReferenceWorkerTTL:          envOrDur("APP_REFERENCE_WORKER_TTL", 24*time.Hour),
-		ReferenceWorkerBackoffBase:  envOrDur("APP_REFERENCE_WORKER_BACKOFF_BASE", time.Second),
-		ReferenceWorkerBackoffMax:   envOrDur("APP_REFERENCE_WORKER_BACKOFF_MAX", 15*time.Minute),
 		MetricsAddr:                 envOr("APP_METRICS_ADDR", ":9090"),
-		ShutdownTimeout:             envOrDur("APP_SHUTDOWN_TIMEOUT", 30*time.Second),
+		ShutdownTimeout:             30 * time.Second,
+		OutboxPollInterval:          time.Second,
+		OutboxLease:                 30 * time.Second,
+		OutboxSendTimeout:           10 * time.Second,
+		OutboxBackoffBase:           time.Second,
+		OutboxBackoffMax:            15 * time.Minute,
+		SQSVisibilityTimeout:        30 * time.Second,
+		SQSConsumerBackoffBase:      time.Second,
+		SQSConsumerBackoffMax:       15 * time.Minute,
+		ReferenceWorkerPollInterval: time.Second,
+		ReferenceWorkerTTL:          24 * time.Hour,
+		ReferenceWorkerBackoffBase:  time.Second,
+		ReferenceWorkerBackoffMax:   15 * time.Minute,
+	}
+	mustInt("APP_OUTBOX_BATCH_SIZE", 10, &cfg.OutboxBatchSize)
+	mustInt("APP_SQS_MAX_RECEIVE_COUNT", 5, &cfg.SQSMaxReceiveCount)
+	mustInt("APP_SQS_CONSUMER_CONCURRENCY", 4, &cfg.SQSConsumerConcurrency)
+	mustInt("APP_REFERENCE_WORKER_BATCH_SIZE", 10, &cfg.ReferenceWorkerBatchSize)
+	mustInt("APP_REFERENCE_WORKER_MAX_ATTEMPTS", 30, &cfg.ReferenceWorkerMaxAttempts)
+	mustDur("APP_SHUTDOWN_TIMEOUT", 30*time.Second, &cfg.ShutdownTimeout)
+	mustDur("APP_OUTBOX_POLL_INTERVAL", time.Second, &cfg.OutboxPollInterval)
+	mustDur("APP_OUTBOX_LEASE", 30*time.Second, &cfg.OutboxLease)
+	mustDur("APP_OUTBOX_SEND_TIMEOUT", 10*time.Second, &cfg.OutboxSendTimeout)
+	mustDur("APP_OUTBOX_BACKOFF_BASE", time.Second, &cfg.OutboxBackoffBase)
+	mustDur("APP_OUTBOX_BACKOFF_MAX", 15*time.Minute, &cfg.OutboxBackoffMax)
+	mustDur("APP_SQS_VISIBILITY_TIMEOUT", 30*time.Second, &cfg.SQSVisibilityTimeout)
+	mustDur("APP_SQS_CONSUMER_BACKOFF_BASE", time.Second, &cfg.SQSConsumerBackoffBase)
+	mustDur("APP_SQS_CONSUMER_BACKOFF_MAX", 15*time.Minute, &cfg.SQSConsumerBackoffMax)
+	mustDur("APP_REFERENCE_WORKER_POLL_INTERVAL", time.Second, &cfg.ReferenceWorkerPollInterval)
+	mustDur("APP_REFERENCE_WORKER_TTL", 24*time.Hour, &cfg.ReferenceWorkerTTL)
+	mustDur("APP_REFERENCE_WORKER_BACKOFF_BASE", time.Second, &cfg.ReferenceWorkerBackoffBase)
+	mustDur("APP_REFERENCE_WORKER_BACKOFF_MAX", 15*time.Minute, &cfg.ReferenceWorkerBackoffMax)
+	if err := errors.Join(errs...); err != nil {
+		return Config{}, err
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -137,10 +175,26 @@ func (c Config) validate() error {
 			return fmt.Errorf("config: APP_ROLES desconhecido %q", role)
 		}
 	}
+	if c.DatabaseURL == "" {
+		// Todos os papéis leem/escrevem no PostgreSQL (consultas, inbox, outbox).
+		return fmt.Errorf("config: APP_DATABASE_URL obrigatória")
+	}
+	if c.RolesSQSConsumer() {
+		if c.SQSConsumerQueueURL == "" {
+			return fmt.Errorf("config: papel sqs-consumer exige APP_SQS_QUEUE_URL")
+		}
+		if c.SQSConsumerDLQURL == "" {
+			return fmt.Errorf("config: papel sqs-consumer exige APP_SQS_DLQ_URL")
+		}
+	}
+	if c.RolesOutboxPublisher() && c.OutboxEventsQueueURL == "" {
+		return fmt.Errorf("config: papel outbox-publisher exige APP_SQS_EVENTS_QUEUE_URL")
+	}
 	if c.OutboxBatchSize < 1 {
 		return fmt.Errorf("config: APP_OUTBOX_BATCH_SIZE deve ser >= 1")
 	}
-	if c.OutboxPollInterval <= 0 || c.OutboxLease <= 0 || c.OutboxSendTimeout <= 0 {
+	if c.OutboxPollInterval <= 0 || c.OutboxLease <= 0 || c.OutboxSendTimeout <= 0 ||
+		c.OutboxBackoffBase <= 0 || c.OutboxBackoffMax <= 0 {
 		return fmt.Errorf("config: intervalos do outbox devem ser positivos")
 	}
 	if c.ReferenceWorkerBatchSize < 1 {
@@ -176,28 +230,28 @@ func envOr(key, def string) string {
 	return def
 }
 
-func envOrInt(key string, def int) int {
+func envOrInt(key string, def int) (int, error) {
 	v, ok := os.LookupEnv(key)
 	if !ok || v == "" {
-		return def
+		return def, nil
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		return def
+		return 0, fmt.Errorf("config: %s=%q inválido", key, v)
 	}
-	return n
+	return n, nil
 }
 
-func envOrDur(key string, def time.Duration) time.Duration {
+func envOrDur(key string, def time.Duration) (time.Duration, error) {
 	v, ok := os.LookupEnv(key)
 	if !ok || v == "" {
-		return def
+		return def, nil
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		return def
+		return 0, fmt.Errorf("config: %s=%q inválido", key, v)
 	}
-	return d
+	return d, nil
 }
 
 func splitCSV(s string) []string {

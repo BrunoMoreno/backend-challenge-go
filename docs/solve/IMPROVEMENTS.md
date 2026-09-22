@@ -86,6 +86,11 @@ Levantamento feito em 2026-09-21 por exploração dirigida do código (4 recorte
 
 ## Prioridade baixa — manutenção e DX
 
+> **Resolvido** (branch `fix/low-priority-improvements`): os sete itens L1–L7 foram
+> implementados e validados — unit `-race` verde, vet/gofmt limpos, CI e lint
+> novos no `Makefile`/GitHub Actions. Suíte de integração revalidada no final.
+> Detalhes e testes novos em `docs/solve/ATTACK-LOW.md`.
+
 ### L1. Backoff implementado duas vezes
 `consumer.go:537-558` vs `platform/backoff/backoff.go:19-40` (já divergem: jitter floor 1s vs 30ms). Unificar; consumidor deve chamar o pacote compartilhado.
 
