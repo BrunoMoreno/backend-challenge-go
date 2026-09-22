@@ -25,13 +25,22 @@ func handleLive(logger *slog.Logger) http.HandlerFunc {
 }
 
 // handleReady responde 200 quando o processo está pronto para tráfego e 503
-// nomeando o componente que falhou no probe.
-func handleReady(deps Deps) http.HandlerFunc {
+// quando o probe falha ou a instância está em desligamento (draining). O 503
+// detalha o erro APENAS no log: o corpo devolve um código de negócio genérico,
+// sem vazar nomes de componente/rede para o lado do chamador (M10).
+func handleReady(logger *slog.Logger, deps Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if deps.Draining != nil && deps.Draining.Load() {
+			writeError(w, http.StatusServiceUnavailable, "DRAINING",
+				"instância em desligamento ordenado")
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 		if err := deps.Ready(ctx); err != nil {
-			writeError(w, http.StatusServiceUnavailable, "NOT_READY", err.Error())
+			logger.Error("health/ready: componente fora do ar", "error", err)
+			writeError(w, http.StatusServiceUnavailable, "NOT_READY",
+				"serviço não está pronto para tráfego")
 			return
 		}
 		w.WriteHeader(http.StatusOK)

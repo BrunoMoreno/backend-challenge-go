@@ -115,6 +115,36 @@ func TestJWKSVerifierRejectsUnknownKid(t *testing.T) {
 	}
 }
 
+// TestJWKSVerifierUnknownKidThrottled garante que um kid desconhecido com o
+// cache fresco não vira um GET no Keycloak por requisição (M9): a rotação é
+// atendida pelo primeiro refresh (janela de grace) e os demais são rejeitados
+// sem tocar na rede, até a janela reabrir.
+func TestJWKSVerifierUnknownKidThrottled(t *testing.T) {
+	key := mustRSAKey(t)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		writeJWKS(w, testKid, &key.PublicKey)
+	}))
+	t.Cleanup(srv.Close)
+
+	v := mustVerifier(t, srv.URL)
+	v.ttl = 24 * time.Hour // cache sempre fresco no teste
+
+	token := signRS256(t, key, "kid-inventado", validClaims(testAudience))
+	if _, err := v.Verify(context.Background(), token); err != ErrUnauthenticated {
+		t.Fatalf("Verify() kid desconhecido error = %v, want ErrUnauthenticated", err)
+	}
+
+	before := calls.Load() // primeiro desconhecido: refresh no limite da rotação
+	if _, err := v.Verify(context.Background(), token); err != ErrUnauthenticated {
+		t.Fatalf("Verify() segundo kid desconhecido error = %v, want ErrUnauthenticated", err)
+	}
+	if got := calls.Load(); got != before {
+		t.Fatalf("chamadas ao JWKS com kid desconhecido = %d, want %d (throttle deveria conter o GET por request)", got, before)
+	}
+}
+
 func TestJWKSVerifierRejectsAlgNone(t *testing.T) {
 	key := mustRSAKey(t)
 	v := mustVerifier(t, jwksServer(t, testKid, &key.PublicKey))

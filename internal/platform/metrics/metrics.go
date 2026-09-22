@@ -39,7 +39,7 @@ func New() *Metrics {
 		}, []string{"method", "route"}),
 		sqsMessages: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "sqs_messages_total",
-			Help: "Mensagens SQS da fila de entrada, por desfecho (processed, dead, retry, replay).",
+			Help: "Mensagens SQS da fila de entrada, por desfecho (processed, dead, retry, replay, redrive, dlq_failed).",
 		}, []string{"status"}),
 		outboxEvents: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "outbox_events_total",

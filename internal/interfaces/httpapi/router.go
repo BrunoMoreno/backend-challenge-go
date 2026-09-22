@@ -22,6 +22,10 @@ func NewServerWithDeps(cfg config.Config, logger *slog.Logger, deps Deps) *http.
 		Addr:              cfg.HTTPAddr,
 		Handler:           buildHandler(handlerLog, deps),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 }
 
@@ -37,7 +41,7 @@ func buildHandler(logger *slog.Logger, deps Deps) http.Handler {
 	mux.HandleFunc("GET /swagger/", handleSwaggerUI)
 	mux.HandleFunc("GET /health/live", handleLive(logger))
 	if deps.Ready != nil {
-		mux.HandleFunc("GET /health/ready", handleReady(deps))
+		mux.HandleFunc("GET /health/ready", handleReady(logger, deps))
 	}
 
 	if deps.Verifier != nil {

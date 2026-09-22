@@ -61,6 +61,18 @@ func New(factory *postgres.UnitOfWorkFactory, sender Sender, logger *slog.Logger
 	if cfg.SendTimeout <= 0 {
 		cfg.SendTimeout = 10 * time.Second
 	}
+	// M7: o lease cobre o claim + envio sequencial de todo o lote. Se fosse
+	// menor, o pior caso (BatchSize×SendTimeout) estouraria o lease no meio do
+	// lote: outra instância republicaria eventos ainda em voo e quebraria a
+	// ordenação FIFO da fila.
+	minLease := time.Duration(cfg.BatchSize) * cfg.SendTimeout
+	if cfg.Lease < minLease {
+		if logger != nil {
+			logger.Warn("outbox: lease elevado para cobrir o envio do lote",
+				"lease", cfg.Lease, "minLease", minLease, "batchSize", cfg.BatchSize, "sendTimeout", cfg.SendTimeout)
+		}
+		cfg.Lease = minLease
+	}
 	if cfg.BackoffBase <= 0 {
 		cfg.BackoffBase = time.Second
 	}

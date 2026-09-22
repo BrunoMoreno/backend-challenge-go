@@ -1,10 +1,14 @@
 package sqsconsumer
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand"
 	"testing"
 	"time"
+
+	"github.com/BrunoMoreno/backend-challenge-go/internal/infra/postgres"
 )
 
 // TestBackoffNeverBelowOneSecond garante o invariante do A2: o backoff de
@@ -53,5 +57,32 @@ func TestBackoffRespectsCeiling(t *testing.T) {
 		if d > 10*time.Second {
 			t.Fatalf("backoff(%d) = %v, ultrapassou BackoffMax", count, d)
 		}
+	}
+}
+
+// TestIsRetryableClassifiesTransientFailures cobre o M5: conflito de versão
+// otimista e duplicata de índice em corrida são transitórios (o commit do
+// concorrente torna a reentrega um replay) e NÃO podem ir direto à DLQ.
+func TestIsRetryableClassifiesTransientFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"lock otimista", postgres.ErrOptimisticLock, true},
+		{"duplicata", postgres.ErrDuplicate, true},
+		{"duplicata com constraint", fmt.Errorf("%w: wallets_unique", postgres.ErrDuplicate), true},
+		{"serialização", postgres.ErrSerialization, true},
+		{"deadlock", postgres.ErrDeadlock, true},
+		{"inesperado", postgres.ErrUnexpected, true},
+		{"não encontrado", postgres.ErrNotFound, true},
+		{"erro de negócio", errors.New("PERMANENT_FAILURE: outra coisa"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isRetryable(tc.err); got != tc.want {
+				t.Errorf("isRetryable(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

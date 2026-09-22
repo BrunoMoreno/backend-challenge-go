@@ -27,7 +27,16 @@ var (
 
 // NewPool cria um pool pgx a partir do DSN.
 func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, dsn)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: parse DSN: %w", err)
+	}
+	// Timeouts de sessão (M6): sem eles, um lock de carteira abandonado por um
+	// cliente travado segura a linha "para sempre" e uma transação ociosa retém
+	// o pool. Só entra se o operador não os definiu (RUNTIME_PARAMS no DSN não
+	// sobrescreve um statement_timeout já presente).
+	cfg.ConnConfig.RuntimeParams = applyDefaultRuntimeParams(cfg.ConnConfig.RuntimeParams)
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: abrir pool: %w", err)
 	}
@@ -36,6 +45,23 @@ func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("postgres: ping: %w", err)
 	}
 	return pool, nil
+}
+
+// applyDefaultRuntimeParams injeta os timeouts de sessão ausentes.
+func applyDefaultRuntimeParams(params map[string]string) map[string]string {
+	if params == nil {
+		params = make(map[string]string)
+	}
+	if _, ok := params["statement_timeout"]; !ok {
+		params["statement_timeout"] = "30s"
+	}
+	if _, ok := params["lock_timeout"]; !ok {
+		params["lock_timeout"] = "5s"
+	}
+	if _, ok := params["idle_in_transaction_session_timeout"]; !ok {
+		params["idle_in_transaction_session_timeout"] = "30s"
+	}
+	return params
 }
 
 // mapError converte erros do pgx nos sentinelas deste pacote.

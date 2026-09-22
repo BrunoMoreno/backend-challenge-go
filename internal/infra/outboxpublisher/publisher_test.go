@@ -52,3 +52,19 @@ func TestNextAttemptJitterWithinRange(t *testing.T) {
 		t.Fatalf("jitter ampliou demais o delay: %v (base 4s)", target.Sub(now))
 	}
 }
+
+// TestNewClampsLeaseToBatchCoverage garante o M7: o lease nunca fica menor que
+// o pior caso de envio do lote (BatchSize×SendTimeout) — um lease menor
+// estouraria no meio do lote e outra instância republicaria eventos em voo,
+// quebrando a ordem FIFO da fila.
+func TestNewClampsLeaseToBatchCoverage(t *testing.T) {
+	cfg := Config{
+		BatchSize:   10,
+		SendTimeout: 10 * time.Second,
+		Lease:       5 * time.Second, // menor que 100s
+	}
+	p := New(nil, nil, nil, cfg)
+	if want := 100 * time.Second; p.cfg.Lease != want {
+		t.Fatalf("Lease = %v, want %v (BatchSize×SendTimeout)", p.cfg.Lease, want)
+	}
+}

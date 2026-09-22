@@ -30,6 +30,11 @@ Levantamento feito em 2026-09-21 por exploração dirigida do código (4 recorte
 
 ## Prioridade média — robustez e observabilidade
 
+> **Resolvido** (branch `fix/medium-priority-improvements`): os doze itens M1–M12
+> foram implementados e validados — unit `-race` verde, suíte de integração
+> `-race` verde (53s), `gofmt`/`vet`/`build` limpos, migração `000009` aplicada.
+> Detalhes e testes novos em `docs/solve/ATTACK-MEDIUM.md`.
+
 ### M1. Heartbeat SQS sem timeout (goroutine leak / shutdown travado)
 - `consumer.go:514,524` — `ChangeMessageVisibility(context.Background(), ...)` sem deadline; broker pendurado retém por minutos (retryer do SDK) → `defer { hbCancel(); <-hbDone }` (`:209-212`) trava e o `Run` não encerra; shutdown só escapa via `fx.StopTimeout`.
 - **Fix:** `context.WithTimeout(..., min(intervalo, 5s))` em toda chamada, logar timeout.
