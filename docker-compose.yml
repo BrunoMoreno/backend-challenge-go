@@ -71,7 +71,12 @@ services:
       APP_SQS_CONSUMER_BACKOFF_MAX: 15m
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
-      APP_KEYCLOAK_ISSUER: http://keycloak:8080/realms/wagering
+      # Issuer precisa ser a URL FRONTAL do Keycloak (localhost:8081), a mesma
+      # que emite os tokens pelo `make kc-token`: o JWT carrega `iss` com essa
+      # URL e a validação exige igualdade exata. http://keycloak:8080 NÃO bate
+      # → 401 em toda rota de negócio (ver docs/AUTHENTICATION.md §2.2).
+      APP_KEYCLOAK_ISSUER: http://localhost:8081/realms/wagering
+      # JWKS é buscado pelo servidor na rede interna; pode usar o DNS do container.
       APP_KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
       APP_KEYCLOAK_CLIENT_ID: wager-api
       APP_LOG_LEVEL: info
